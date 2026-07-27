@@ -3,7 +3,11 @@ import { ArrowLeft, ArrowRight, BookOpen, Camera, Check, Crop, Download, Film, H
 import { AIStudio } from './AIStudio';
 import { addToLibrary, loadLibrary, type LibraryAsset } from '../utils/assetLibrary';
 import { BUILT_IN_PRESETS } from '../ai/presets';
-import { describeAtlasSceneOptions, loadPromptAgentConfig } from '../ai/promptAgent';
+import {
+  describeAtlasSceneOptions,
+  loadPromptAgentConfig,
+  savePromptAgentConfig,
+} from '../ai/promptAgent';
 import {
   clearActiveAtlasProject,
   createAtlasProject,
@@ -147,6 +151,25 @@ const buildAtlasPromptTemplate = (locationName: string, camera: AtlasCameraView 
   suffix: '。严格保留原参考照片的场景辨识度、建筑特征和景物空间关系。以场景本身的美感、视觉重心、构图节奏和层次完整为最高优先，不要为了后续角色刻意制造大片空地或留白。高清简洁，色彩搭配高级简约。不要出现文字、Logo或水印。比例3:4',
 });
 
+const buildFallbackSceneOptions = (
+  locationName: string,
+  strategy: AtlasSceneStrategy,
+  camera: AtlasCameraView,
+) => {
+  const location = locationName.trim() || '参考场景';
+  const view = describeCameraViewCompact(camera);
+  const strategyText = strategy === 'recompose'
+    ? '从原拍摄点附近轻微侧移'
+    : strategy === 'landmark'
+      ? '靠近最具辨识度的主体'
+      : '基本保持原照片方向并适度推进';
+  return [
+    `以${location}的主要建筑或地标为主体，${strategyText}，采用${view}，保留真实前中后景关系与自然光线，视觉重心落在场景最具辨识度的位置。`,
+    `完整呈现${location}的主体轮廓，前景承接原有道路或自然景物，中景突出建筑空间，远景保留环境层次，采用${view}，构图清晰舒展。`,
+    `围绕${location}建立层次分明的取景，严格沿用参考图中的建筑、树木和道路关系，使用${view}，以主体和周围环境的呼应作为视觉重点。`,
+  ];
+};
+
 export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, onEnterJoy }) => {
   const [project, setProject] = useState<AtlasProject | null>(() => loadActiveAtlasProject());
   const [projectName, setProjectName] = useState('');
@@ -156,6 +179,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
   const [sceneReferenceDataUrl, setSceneReferenceDataUrl] = useState('');
   const [sceneCrop, setSceneCrop] = useState<AtlasCropRect>(DEFAULT_CROP);
   const [sceneCamera, setSceneCamera] = useState<AtlasCameraView>(DEFAULT_CAMERA);
+  const [sceneAgentConfig, setSceneAgentConfig] = useState(() => loadPromptAgentConfig());
   const [preparingScene, setPreparingScene] = useState(false);
   const [prepareError, setPrepareError] = useState('');
   const sceneReferenceInputRef = useRef<HTMLInputElement>(null);
@@ -172,6 +196,10 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
   useEffect(() => {
     setProject(loadActiveAtlasProject());
   }, [revision]);
+
+  useEffect(() => {
+    savePromptAgentConfig(sceneAgentConfig);
+  }, [sceneAgentConfig]);
 
   useEffect(() => {
     if (!project) return;
@@ -226,14 +254,21 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
       if (!seedreamConfig) throw new Error('未找到 Seedream 模型配置');
       const croppedReference = await cropImageDataUrl(sceneReferenceDataUrl, sceneCrop);
       const sceneStrategy = resolveSceneStrategy(sceneCamera);
-      const sceneDescriptionOptions = await describeAtlasSceneOptions(
-        loadPromptAgentConfig(),
-        seedreamConfig,
-        croppedReference,
-        locationName,
-        sceneStrategy,
-        sceneCamera,
-      );
+      let sceneDescriptionOptions: string[];
+      try {
+        if (!sceneAgentConfig.apiKey.trim()) throw new Error('未配置场景分析 API Key');
+        sceneDescriptionOptions = await describeAtlasSceneOptions(
+          sceneAgentConfig,
+          seedreamConfig,
+          croppedReference,
+          locationName,
+          sceneStrategy,
+          sceneCamera,
+        );
+      } catch (analysisError) {
+        console.warn('[Atlas] 场景 AI 分析不可用，使用本地基础方案继续：', analysisError);
+        sceneDescriptionOptions = buildFallbackSceneOptions(locationName, sceneStrategy, sceneCamera);
+      }
       const sceneDescription = sceneDescriptionOptions[0] || '';
       const baseProject = project?.currentStage === 'setup'
         ? saveActiveAtlasProject({
@@ -789,6 +824,66 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
               </div>
               <input type="checkbox" checked={dynamicEnabled} onChange={(event) => setDynamicEnabled(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
             </label>
+
+            <details className="group rounded-md border border-white/10 bg-[#111516]">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4">
+                <div>
+                  <p className="flex items-center gap-2 text-sm text-neutral-200">
+                    <Sparkles size={15} className="text-cyan-300" />
+                    场景分析模型
+                  </p>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    {sceneAgentConfig.model || '尚未设置模型'} · 用于识别参考图并生成三个取景方案
+                  </p>
+                </div>
+                <span className={`rounded-full px-2.5 py-1 text-[11px] ${sceneAgentConfig.apiKey.trim() ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/5 text-neutral-400'}`}>
+                  {sceneAgentConfig.apiKey.trim() ? 'API Key 已配置' : '未配置时使用基础方案'}
+                </span>
+              </summary>
+
+              <div className="grid gap-3 border-t border-white/8 px-4 py-4 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-xs text-neutral-500">模型名称</span>
+                  <input
+                    className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
+                    value={sceneAgentConfig.model}
+                    onChange={(event) => setSceneAgentConfig((current) => ({ ...current, model: event.target.value }))}
+                    placeholder="doubao-seed-2-0-lite-260428"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-xs text-neutral-500">API Key</span>
+                  <input
+                    className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
+                    type="password"
+                    value={sceneAgentConfig.apiKey}
+                    onChange={(event) => setSceneAgentConfig((current) => ({ ...current, apiKey: event.target.value }))}
+                    placeholder="填写用于场景分析的 Ark API Key"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-xs text-neutral-500">Base URL</span>
+                  <input
+                    className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
+                    value={sceneAgentConfig.baseUrl}
+                    onChange={(event) => setSceneAgentConfig((current) => ({ ...current, baseUrl: event.target.value }))}
+                    placeholder="/ark-api"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-xs text-neutral-500">聊天端点</span>
+                  <input
+                    className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
+                    value={sceneAgentConfig.path}
+                    onChange={(event) => setSceneAgentConfig((current) => ({ ...current, path: event.target.value }))}
+                    placeholder="/api/v3/responses"
+                  />
+                </label>
+                <p className="text-xs leading-5 text-neutral-600 md:col-span-2">
+                  这里的配置只负责第一步“分析场景”。如果 Key 或接口不可用，会自动使用三个可编辑的基础方案继续，不会阻塞工作流；下一步生成场景图片仍使用图片生成区域选择的 Seedream 等模型。
+                </p>
+              </div>
+            </details>
           </div>
 
           {prepareError && <p className="mt-4 text-sm text-red-400">{prepareError}</p>}

@@ -1,6 +1,6 @@
 export const translations = {
   zh: {
-    title: 'LottieKey',
+    title: 'JOYFlow',
     subtitle: 'V2.0 · 互动视觉资产生产工作台',
 
     // Modes
@@ -107,7 +107,7 @@ export const translations = {
     duration: '总时长',
   },
   en: {
-    title: 'LottieKey',
+    title: 'JOYFlow',
     subtitle: 'V2.0 · Interactive Visual Asset Studio',
     videoMode: 'Video',
     sequenceMode: 'PNG Sequence',

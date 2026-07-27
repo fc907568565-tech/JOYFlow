@@ -1,5 +1,5 @@
 /**
- * LottieKey V2.0 主入口
+ * JOYFlow V2.0 主入口
  * - 左：可滚动预览区（PreviewStage + Stats + Timeline + Lottie 预览）
  * - 右：ControlPanel（素材源 / 绿幕 / 叠加素材 / 画布 / 优化）
  */
@@ -569,7 +569,7 @@ export default function App() {
         ? buildCompositeLottie(processed, outW, outH, targetFps, mapAssetsToOutput(outW, outH, previewW, previewH))
         : buildSequencedLottie(processed, outW, outH, targetFps);
       setLastLottieData(json);
-      downloadJson(json, 'lottiekey_png_sequence');
+      downloadJson(json, 'joyflow_png_sequence');
       setStatus('DONE');
     } catch (err) {
       console.error(err);
@@ -718,7 +718,7 @@ export default function App() {
             const a = document.createElement('a');
             const ext = recorder!.mimeType.includes('mp4') ? 'mp4' : 'webm';
             a.href = url;
-            a.download = `lottiekey_video_${Date.now()}.${ext}`;
+            a.download = `joyflow_video_${Date.now()}.${ext}`;
             a.click();
             URL.revokeObjectURL(url);
             resolve();

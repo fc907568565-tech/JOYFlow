@@ -10,7 +10,7 @@ export function buildSequencedLottie(
 ) {
   return {
     v: '5.7.1', fr: fps, ip: 0, op: frames.length,
-    w, h, nm: 'LottieKey_Export', ddd: 0,
+    w, h, nm: 'JOYFlow_Export', ddd: 0,
     assets: frames.map((f) => ({ id: f.id, w, h, u: '', p: f.data, e: 1 })),
     layers: frames.map((f, i) => ({
       ty: 2, nm: `Frame ${i}`, refId: f.id,
@@ -101,7 +101,7 @@ export function buildCompositeLottie(
 
   return {
     v: '5.7.1', fr: fps, ip: 0, op: totalDur,
-    w, h, nm: 'LottieKey_Composite', ddd: 0,
+    w, h, nm: 'JOYFlow_Composite', ddd: 0,
     assets: assetEntries,
     // 顺序：在视频之上的素材 → 视频帧 → 在视频之下的素材
     layers: [...aboveLayers, ...videoLayers, ...belowLayers],
