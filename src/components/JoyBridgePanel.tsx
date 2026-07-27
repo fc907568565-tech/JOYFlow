@@ -52,7 +52,7 @@ interface JoyCapabilities {
   faces: Array<{ label: string; value: string }>;
 }
 
-const JOY_URL = '/joy-compose';
+const JOY_URL = import.meta.env.DEV ? '/joy-compose' : '/joy-compose.html';
 
 const FALLBACK_POSES = [
   '静止', 'wink', '伸懒腰', '呼吸', '坐下', '失落', '害羞', '左右摇摆', '左顾右盼', '思考',

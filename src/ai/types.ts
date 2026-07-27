@@ -64,15 +64,15 @@ export interface NormalizedTaskResult {
 }
 
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
-  baseUrl: 'https://api.openai.com',
+  baseUrl: import.meta.env.DEV ? '/ark-api' : '/api/ark',
   apiKey: '',
-  model: 'gpt-image-1',
-  imageGeneratePath: '/v1/images/generations',
-  videoGeneratePath: '/v1/videos/generations',
-  taskStatusPath: '/v1/tasks/:id',
-  timeoutMs: 45000,
+  model: 'doubao-seedream-5-0-260128',
+  imageGeneratePath: '/api/v3/images/generations',
+  videoGeneratePath: '',
+  taskStatusPath: '',
+  timeoutMs: 300000,
   pollIntervalMs: 2000,
-  pollMaxTimes: 25,
+  pollMaxTimes: 1,
 };
 
 export const DEFAULT_PAYLOAD: GeneratePayload = {

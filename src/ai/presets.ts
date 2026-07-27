@@ -12,6 +12,9 @@ export interface ModelPreset {
 
 export type ModelMediaKind = 'image' | 'video';
 
+const providerBase = (productionPath: string, developmentPath = productionPath) =>
+  import.meta.env.DEV ? developmentPath : productionPath;
+
 export const inferModelCapabilities = (
   config: ModelConfig,
   name = ''
@@ -47,46 +50,12 @@ const stripPresetSecrets = (config: ModelConfig): ModelConfig => ({
 // 内置预设模板
 export const BUILT_IN_PRESETS: ModelPreset[] = [
   {
-    id: '__openai__',
-    name: 'OpenAI (GPT-Image)',
-    builtIn: true,
-    capabilities: ['image'],
-    config: {
-      baseUrl: 'https://api.openai.com',
-      apiKey: '',
-      model: 'gpt-image-1',
-      imageGeneratePath: '/v1/images/generations',
-      videoGeneratePath: '/v1/videos/generations',
-      taskStatusPath: '/v1/tasks/:id',
-      timeoutMs: 45000,
-      pollIntervalMs: 2000,
-      pollMaxTimes: 25,
-    },
-  },
-  {
-    id: '__google_nano_banana__',
-    name: 'Google Nano Banana 2',
-    builtIn: true,
-    capabilities: ['image'],
-    config: {
-      baseUrl: '/google-api',
-      apiKey: '',
-      model: 'gemini-3.1-flash-image',
-      imageGeneratePath: '/v1beta/models/gemini-3.1-flash-image:generateContent',
-      videoGeneratePath: '',
-      taskStatusPath: '',
-      timeoutMs: 300000,
-      pollIntervalMs: 2000,
-      pollMaxTimes: 1,
-    },
-  },
-  {
     id: '__doubao_video__',
     name: '豆包 (视频生成)',
     builtIn: true,
     capabilities: ['video'],
     config: {
-      baseUrl: 'https://ark.cn-beijing.volces.com',
+      baseUrl: providerBase('/api/ark', '/ark-api'),
       apiKey: '',
       model: 'doubao-seedance-1-5-pro-251215',
       imageGeneratePath: '/api/v3/contents/generations/tasks',
@@ -103,7 +72,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
     builtIn: true,
     capabilities: ['image'],
     config: {
-      baseUrl: 'https://apihub.agnes-ai.com',
+      baseUrl: providerBase('/api/agnes', 'https://apihub.agnes-ai.com'),
       apiKey: '',
       model: 'agnes-image-2.1-flash',
       imageGeneratePath: '/v1/images/generations',
@@ -120,7 +89,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
     builtIn: true,
     capabilities: ['video'],
     config: {
-      baseUrl: 'https://apihub.agnes-ai.com',
+      baseUrl: providerBase('/api/agnes', 'https://apihub.agnes-ai.com'),
       apiKey: '',
       model: 'agnes-video-v2.0',
       imageGeneratePath: '/v1/images/generations',
@@ -137,7 +106,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
     builtIn: true,
     capabilities: ['video'],
     config: {
-      baseUrl: 'https://api.siliconflow.cn',
+      baseUrl: providerBase('/api/siliconflow', 'https://api.siliconflow.cn'),
       apiKey: '',
       model: 'Wan-AI/Wan2.1-T2V-14B',
       imageGeneratePath: '/v1/images/generations',
@@ -154,7 +123,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
     builtIn: true,
     capabilities: ['image'],
     config: {
-      baseUrl: '/ark-api',
+      baseUrl: providerBase('/api/ark', '/ark-api'),
       apiKey: '',
       model: 'doubao-seedream-4-5-251128',
       imageGeneratePath: '/api/v3/images/generations',
@@ -171,7 +140,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
     builtIn: true,
     capabilities: ['image'],
     config: {
-      baseUrl: '/ark-api',
+      baseUrl: providerBase('/api/ark', '/ark-api'),
       apiKey: '',
       model: 'doubao-seedream-5-0-260128',
       imageGeneratePath: '/api/v3/images/generations',
@@ -184,7 +153,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
   },
   {
     id: '__jd_gpt_image__',
-    name: 'JD GPT-Image-2（文生图 / 图生图）',
+    name: 'JD GPT-Image-2（仅京东内网）',
     builtIn: true,
     capabilities: ['image'],
     config: {
@@ -202,7 +171,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
   },
   {
     id: '__jd_gemini_flash__',
-    name: 'JD Gemini-Flash',
+    name: 'JD Gemini-Flash（仅京东内网）',
     builtIn: true,
     capabilities: ['image'],
     config: {
@@ -219,7 +188,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
   },
   {
     id: '__jd_gemini_pro_image__',
-    name: 'JD Gemini Pro Image Preview',
+    name: 'JD Gemini Pro Image Preview（仅京东内网）',
     builtIn: true,
     capabilities: ['image'],
     config: {
@@ -236,7 +205,7 @@ export const BUILT_IN_PRESETS: ModelPreset[] = [
   },
   {
     id: '__jd_seedance_2_fast__',
-    name: 'JD Doubao Seedance 2.0 Fast',
+    name: 'JD Doubao Seedance 2.0 Fast（仅京东内网）',
     builtIn: true,
     capabilities: ['video'],
     config: {

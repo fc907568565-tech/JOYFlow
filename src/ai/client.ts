@@ -62,7 +62,7 @@ const toGeminiInlineData = async (image: string) => {
 
 const normalizeArkBaseUrl = (baseUrl: string) =>
   /ark\.cn-beijing\.volces\.com|volcengine\.com/i.test(baseUrl)
-    ? '/ark-api'
+    ? (import.meta.env.DEV ? '/ark-api' : '/api/ark')
     : baseUrl;
 
 const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
@@ -449,7 +449,7 @@ export const submitGenerateTask = async (
 
   // 判断是否为 Gemini 格式 API（contents 数组）
   const isGeminiApi = path.includes('gemini');
-  const isGoogleGeminiApi = /google-api|generativelanguage\.googleapis\.com/i.test(cfg.baseUrl);
+  const isGoogleGeminiApi = /google-api|\/api\/google|generativelanguage\.googleapis\.com/i.test(cfg.baseUrl);
 
   let body: Record<string, unknown>;
 
@@ -724,7 +724,7 @@ export const submitGenerateTask = async (
     url,
     {
       method: 'POST',
-      headers: !isGoogleGeminiApi && cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+      headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
       body: JSON.stringify(body),
     },
     timeout

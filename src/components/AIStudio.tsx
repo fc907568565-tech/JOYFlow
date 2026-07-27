@@ -916,7 +916,7 @@ export const AIStudio: React.FC<AIStudioProps> = ({
 
               {payload.kind === 'image' && (() => {
                 const isSeedream = /seedream/i.test(modelConfig.model) || /\/ark-api|volces\.com/.test(modelConfig.baseUrl);
-                const isNanoBanana = /gemini-.*-image/i.test(modelConfig.model) && /google-api|googleapis\.com/i.test(modelConfig.baseUrl);
+                const isNanoBanana = /gemini-.*-image/i.test(modelConfig.model) && /google-api|\/api\/google|googleapis\.com/i.test(modelConfig.baseUrl);
                 return (
                   <div className="grid grid-cols-[110px_1fr_1fr] gap-3 items-center">
                     <label className="text-[15px] text-neutral-300">{isNanoBanana ? '尺寸与比例' : '尺寸与数量'}</label>

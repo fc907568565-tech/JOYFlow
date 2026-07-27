@@ -10,7 +10,7 @@ export interface PromptAgentConfig {
 const STORAGE_KEY = 'lottiekey-prompt-agent-config-v2';
 
 export const DEFAULT_PROMPT_AGENT_CONFIG: PromptAgentConfig = {
-  baseUrl: '/ark-api',
+  baseUrl: import.meta.env.DEV ? '/ark-api' : '/api/ark',
   apiKey: '',
   model: 'doubao-seed-2-0-lite-260428',
   path: '/api/v3/responses',
@@ -32,7 +32,9 @@ export const savePromptAgentConfig = (config: PromptAgentConfig) => {
 };
 
 const normalizeBaseUrl = (baseUrl: string) =>
-  /ark\.cn-beijing\.volces\.com|volcengine\.com/i.test(baseUrl) ? '/ark-api' : baseUrl.replace(/\/$/, '');
+  /ark\.cn-beijing\.volces\.com|volcengine\.com/i.test(baseUrl)
+    ? (import.meta.env.DEV ? '/ark-api' : '/api/ark')
+    : baseUrl.replace(/\/$/, '');
 
 const readAgentText = (raw: any): string => {
   if (typeof raw?.output_text === 'string') return raw.output_text;

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/joy-proxy/api/:path*", "destination": "/api/provider?provider=joy&path=api/:path*" },
+    { "source": "/api/ark/:path*", "destination": "/api/provider?provider=ark&path=:path*" },
+    { "source": "/api/google/:path*", "destination": "/api/provider?provider=google&path=:path*" },
+    { "source": "/api/openai/:path*", "destination": "/api/provider?provider=openai&path=:path*" },
+    { "source": "/api/agnes/:path*", "destination": "/api/provider?provider=agnes&path=:path*" },
+    { "source": "/api/siliconflow/:path*", "destination": "/api/provider?provider=siliconflow&path=:path*" },
+    { "source": "/remote-asset", "destination": "/api/remote-asset" },
+    { "source": "/download-asset", "destination": "/api/download-asset" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}

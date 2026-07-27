@@ -1,0 +1,3791 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>3D 模型查看器 · 切角度 + 换动作</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif; color: #e8e8e8; background: #1a1a1a; }
+  #app { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 1fr auto; height: 100vh; }
+  #canvas-wrap { position: relative; grid-row: 1 / 3; background: #2a2a2a; overflow: hidden; }
+  #canvas-wrap canvas { display: block; position: relative; z-index: 1; }
+  #bg-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; z-index: 0; display: none; pointer-events: none; }
+  #drop-overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(40, 100, 200, 0.4); border: 4px dashed #6cf; font-size: 24px; font-weight: 600; pointer-events: none; z-index: 10; }
+  #drop-overlay.show { display: flex; }
+  #empty-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: #888; pointer-events: none; }
+  #empty-state svg { width: 80px; height: 80px; opacity: 0.4; }
+  #empty-state .hint { font-size: 14px; }
+  #stats { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: ui-monospace, Menlo, monospace; color: #aaa; line-height: 1.6; pointer-events: none; }
+  #notice { position: absolute; bottom: 12px; left: 12px; right: 12px; background: rgba(255, 180, 0, 0.15); border: 1px solid rgba(255, 180, 0, 0.4); color: #ffd070; padding: 12px 16px; border-radius: 8px; font-size: 13px; line-height: 1.6; display: none; }
+  #notice.show { display: block; }
+  #notice a { color: #ffe090; font-weight: 600; }
+
+  #sidebar { background: #232323; border-left: 1px solid #333; padding: 16px; overflow-y: auto; grid-row: 1 / 2; }
+  .section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid #333; }
+  .section:last-child { border: 0; }
+  .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: #888; margin-bottom: 10px; font-weight: 600; }
+  .file-input { display: block; padding: 12px; background: #2c2c2c; border: 1.5px dashed #444; border-radius: 6px; text-align: center; cursor: pointer; font-size: 13px; color: #ccc; transition: all 0.15s; }
+  .file-input:hover { border-color: #6cf; color: #6cf; background: #2a3340; }
+  .file-input input { display: none; }
+  .filename { font-size: 12px; color: #6cf; margin-top: 6px; word-break: break-all; }
+
+  .btn-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  .btn { background: #333; color: #ddd; border: 1px solid #404040; padding: 8px 6px; border-radius: 5px; cursor: pointer; font-size: 12px; transition: all 0.12s; font-family: inherit; }
+  .btn:hover { background: #404040; border-color: #555; }
+  .btn.active { background: #2563eb; border-color: #3b7ee0; color: white; }
+  .btn-full { grid-column: 1 / -1; }
+
+  select, input[type="color"], input[type="range"] { width: 100%; background: #2c2c2c; border: 1px solid #404040; color: #ddd; padding: 7px 10px; border-radius: 5px; font-size: 13px; font-family: inherit; }
+  select { cursor: pointer; }
+  input[type="range"] { padding: 0; height: 28px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row label { font-size: 12px; color: #aaa; flex: 0 0 64px; }
+  .row > select, .row > input { flex: 1; }
+  .value-display { font-size: 11px; color: #888; font-family: ui-monospace, monospace; min-width: 38px; text-align: right; }
+
+  #playbar.hidden { display: none; }
+  #playpause { background: #2563eb; color: white; border: 0; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  #scrub { flex: 1; min-width: 0; }
+  #time { font-size: 11px; color: #888; font-family: ui-monospace, monospace; }
+
+  .link-btn { display: block; text-align: center; padding: 8px; background: rgba(255, 180, 0, 0.12); border: 1px solid rgba(255, 180, 0, 0.3); color: #ffd070; border-radius: 5px; text-decoration: none; font-size: 12px; transition: all 0.15s; }
+  .link-btn:hover { background: rgba(255, 180, 0, 0.2); }
+
+  .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #ccc; cursor: pointer; padding: 4px 0; }
+  .checkbox-row input { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="canvas-wrap">
+    <img id="bg-img" alt="" />
+    <div id="empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+        <path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/>
+      </svg>
+      <div>拖入 FBX / GLB / GLTF / OBJ 文件</div>
+      <div class="hint">或点击右侧 [选择文件]</div>
+    </div>
+    <div id="drop-overlay">放手即载入</div>
+    <div id="stats"></div>
+    <div id="notice"></div>
+  </div>
+
+  <aside id="sidebar">
+    <div class="section">
+      <div class="section-title">🎥 视角</div>
+      <div class="btn-grid">
+        <button class="btn" data-view="front">正面</button>
+        <button class="btn" data-view="back">背面</button>
+        <button class="btn" data-view="left">左侧</button>
+        <button class="btn" data-view="right">右侧</button>
+        <button class="btn" data-view="top">顶视</button>
+        <button class="btn" data-view="bottom">底视</button>
+        <button class="btn" data-view="iso">3/4</button>
+        <button class="btn" data-view="iso2">3/4↗</button>
+        <button class="btn" data-view="reset">居中</button>
+      </div>
+      <div style="font-size:11px;color:#888;margin-top:8px;margin-bottom:4px;">焦段(脸大/脸小)</div>
+      <div class="btn-grid" id="focal-buttons">
+        <button class="btn" data-focal="24">24mm</button>
+        <button class="btn" data-focal="35">35mm</button>
+        <button class="btn active" data-focal="50">50mm</button>
+        <button class="btn" data-focal="85">85mm</button>
+        <button class="btn" data-focal="135">135mm</button>
+      </div>
+    </div>
+
+    <div class="section" id="anim-section">
+      <div class="section-title">🎭 动作</div>
+      <div class="btn-grid" id="anim-buttons">
+        <button class="btn active" data-anim="__none__">静止</button>
+      </div>
+      <label class="checkbox-row" style="margin-top:8px;">
+        <input type="checkbox" id="loop-toggle" checked /> 循环播放
+      </label>
+      <div id="playbar" class="hidden" style="margin-top:10px;">
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="playpause">▶</button>
+          <input type="range" id="scrub" min="0" max="1000" value="0" style="flex:1;" />
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+          <span id="time">0.00 / 0.00</span>
+          <select id="speed-select" style="margin-left:auto; width:80px;">
+            <option value="0.25">0.25x</option>
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="pose-section" style="display:none;">
+      <div class="section-title">🤸 自由摆姿势</div>
+      <button class="btn btn-full" id="pose-toggle" style="background:#2a5;color:#fff;">进入摆姿势模式</button>
+      <div id="pose-body" style="display:none;margin-top:8px;">
+        <p style="font-size:11px;color:#aaa;margin:4px 0;line-height:1.5;">
+          点模型上的<b style="color:#ffd24d;">关节球</b> → 拖动旋转环转动关节。<br>
+          肘/膝已限位,<b style="color:#7fd">不会反关节</b>。动画已暂停。
+        </p>
+        <div style="font-size:12px;color:#ddd;margin:6px 0;">
+          选中关节:<b id="pose-selected" style="color:#ffd24d;">(未选)</b>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <button class="btn" id="pose-reset" style="flex:1;">↺ 重置姿势</button>
+          <button class="btn" id="pose-copy" style="flex:1;background:#357;color:#fff;">复制数值</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="face-section" style="display:none;">
+      <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">
+        <span>😀 表情切换</span>
+        <div style="display:flex;gap:8px;">
+          <label style="font-size:11px;font-weight:normal;cursor:pointer;display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" id="face-anim-link" checked style="margin:0;"> 与动作联动
+          </label>
+          <label style="font-size:11px;font-weight:normal;cursor:pointer;display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" id="joy-sheen-toggle" style="margin:0;"> 环境氛围光
+          </label>
+        </div>
+      </div>
+      <select id="face-select" style="width:100%;padding:6px;margin-top:4px;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:4px;">
+        <option value="">— 无表情 —</option>
+        <option value="01微笑">01 微笑</option>
+        <option value="02大笑" selected>02 大笑</option>
+        <option value="03脸红">03 脸红</option>
+        <option value="04眨单眼大笑">04 眨单眼大笑</option>
+        <option value="05眨眼大笑">05 眨眼大笑</option>
+        <option value="06小开心">06 小开心</option>
+        <option value="07美味">07 美味</option>
+        <option value="08眨眼">08 眨眼</option>
+        <option value="09眯眼美味">09 眯眼美味</option>
+        <option value="10星星眼">10 星星眼</option>
+        <option value="11嘟嘴">11 嘟嘴</option>
+        <option value="12嘟嘴眨眼">12 嘟嘴眨眼</option>
+        <option value="13嘟嘴眯眼">13 嘟嘴眯眼</option>
+        <option value="14眯眼微笑">14 眯眼微笑</option>
+        <option value="15无奈">15 无奈</option>
+        <option value="16嘟嘴困">16 嘟嘴困</option>
+        <option value="17咀嚼">17 咀嚼</option>
+        <option value="18愉悦">18 愉悦</option>
+        <option value="19亲亲">19 亲亲</option>
+        <option value="20歪嘴哼">20 歪嘴哼</option>
+        <option value="21爱心眼">21 爱心眼</option>
+        <option value="22呆住">22 呆住</option>
+        <option value="23困">23 困</option>
+        <option value="24难过">24 难过</option>
+        <option value="25生气">25 生气</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <div class="section-title">💾 保存与恢复</div>
+      <button class="btn btn-full" id="state-save">保存当前调整</button>
+      <button class="btn btn-full" id="state-clear" style="margin-top:4px;">清除保存的调整</button>
+      <div id="state-info" style="font-size:11px; color:#888; margin-top:6px;">
+        保存到浏览器 localStorage,下次打开页面自动恢复(同浏览器同域名)。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📁 模型</div>
+      <label class="file-input">
+        选择文件 (FBX/GLB/GLTF/OBJ)
+        <input type="file" id="file-main" accept=".fbx,.glb,.gltf,.obj" />
+      </label>
+      <div class="filename" id="filename-main"></div>
+      <a href="#" id="load-default-2" class="filename" style="color:#5bf;cursor:pointer;display:block;margin-top:4px">JOY标准绑定 (默认模型)</a>
+    </div>
+
+    <div class="section" id="anim-import-section" style="display:none;">
+      <div class="section-title">🎬 追加动画文件</div>
+      <label class="file-input">
+        合并动画 FBX/GLB
+        <input type="file" id="file-anim" accept=".fbx,.glb,.gltf" multiple />
+      </label>
+      <div class="filename" id="filename-anim"></div>
+    </div>
+
+    <div class="section" id="bone-adjust-section" style="display:none;">
+      <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>🦴 骨骼位置调整</span>
+        <span style="display:flex;gap:6px;">
+          <button class="btn" id="bone-hide-btn" style="font-size:10px;padding:2px 6px;">显示标记</button>
+          <button class="btn" id="bone-collapse-btn" style="font-size:10px;padding:2px 6px;">展开 ▼</button>
+        </span>
+      </div>
+      <div id="bone-adjust-body" style="display:none;">
+        <p style="font-size:11px;color:#aaa;margin:4px 0;">拖动滑条调整骨骼位置，调好后复制数值给我</p>
+        <div id="bone-sliders"></div>
+        <button class="btn" id="bone-copy-btn" style="margin-top:8px;width:100%;background:#2a5;color:#fff;">复制骨骼数值</button>
+        <div id="bone-values-output" style="font-size:10px;color:#8f8;margin-top:4px;word-break:break-all;"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">💡 灯光与环境</div>
+      <div class="row">
+        <label>预设</label>
+        <select id="env-select">
+          <option value="studio">影棚</option>
+          <option value="outdoor">户外</option>
+          <option value="sunset">黄昏</option>
+          <option value="night">夜晚</option>
+          <option value="flat">平铺</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>强度</label>
+        <input type="range" id="exposure" min="0.2" max="2" step="0.05" value="1.0" />
+        <span class="value-display" id="exposure-val">1.00</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🖌 渲染风格</div>
+      <div class="row">
+        <label>风格</label>
+        <select id="render-style">
+          <option value="pbr" selected>真实 PBR (默认)</option>
+          <option value="toon">卡通分色</option>
+          <option value="unlit">平面无光 (2D)</option>
+          <option value="lambert">简化漫反射</option>
+        </select>
+      </div>
+      <div style="font-size:11px; color:#888; margin-top:6px;">
+        非 PBR 风格下「材质调整」滑块不生效(用的不是同一种 shader)。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🎨 背景</div>
+      <div class="row">
+        <label>类型</label>
+        <select id="bg-select">
+          <option value="dark">深灰</option>
+          <option value="light">浅灰</option>
+          <option value="white">纯白</option>
+          <option value="black">纯黑</option>
+          <option value="gradient">渐变</option>
+          <option value="env">环境贴图</option>
+          <option value="image">图片背景</option>
+          <option value="custom">自定义</option>
+        </select>
+      </div>
+      <div class="row" id="bg-color-row" style="display:none;">
+        <label>颜色</label>
+        <input type="color" id="bg-color" value="#1a1a1a" />
+      </div>
+      <label class="file-input" id="bg-image-label" style="margin-top:6px;">
+        📁 上传背景图
+        <input type="file" id="bg-image" accept="image/*" style="display:none;" />
+      </label>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <button class="btn" id="bg-move-toggle" style="flex:2;">🖐 调整背景位置</button>
+        <button class="btn" id="bg-move-reset" style="flex:1;">↺ 重置</button>
+      </div>
+      <p style="font-size:11px;color:#888;margin:4px 0 0;line-height:1.5;">开启后:画布上拖动=移动背景图,滚轮=缩放</p>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🎨 材质调整 (洗白彩虹)</div>
+      <div class="row">
+        <label>饱和度</label>
+        <input type="range" id="mat-sat" min="0" max="1" step="0.01" value="1" />
+        <span class="value-display" id="mat-sat-val">1.00</span>
+      </div>
+      <div class="row">
+        <label>亮度</label>
+        <input type="range" id="mat-bright" min="0.5" max="3" step="0.05" value="1" />
+        <span class="value-display" id="mat-bright-val">1.00</span>
+      </div>
+      <div class="row">
+        <label>白底</label>
+        <input type="range" id="mat-white" min="0" max="1" step="0.01" value="0" />
+        <span class="value-display" id="mat-white-val">0.00</span>
+      </div>
+      <div class="row">
+        <label>发光</label>
+        <input type="range" id="mat-emit" min="0" max="2" step="0.05" value="0" />
+        <span class="value-display" id="mat-emit-val">0.00</span>
+      </div>
+      <button class="btn btn-full" id="preset-meshy" style="margin-top:6px;">一键 Meshy 网页风格</button>
+      <button class="btn btn-full" id="preset-reset" style="margin-top:4px;">还原原始</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🦴 显示</div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="show-grid" checked /> 显示地面网格
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="show-skeleton" /> 显示骨骼
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="auto-rotate" /> 自动旋转
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="wireframe" /> 线框模式
+      </label>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📤 导出</div>
+      <div class="btn-grid">
+        <button class="btn btn-full" id="export-png">导出当前帧 PNG</button>
+        <button class="btn btn-full" id="export-mp4">录制动画 (WebM)</button>
+        <button class="btn btn-full" id="export-glb">📦 导出绑骨模型 (GLB)</button>
+      </div>
+      <div style="font-size:11px; color:#888; margin-top:6px;">
+        GLB 包含完整骨架 + 蒙皮 + 动画(走路/跳舞等),可在 Blender / Unity / 网页 three.js 等用。
+        洗白彩虹的 shader 滑块效果不会带过去(那是浏览器端实时着色器)。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🧩 部件可见性 + 精调</div>
+      <button class="btn btn-full" id="parts-refresh">扫描当前模型部件</button>
+      <div id="parts-list" style="margin-top:8px; max-height:240px; overflow-y:auto;"></div>
+      <div id="part-controls" style="margin-top:10px; padding-top:10px; border-top:1px solid #333; display:none;">
+        <div style="font-size:12px; color:#ccc; margin-bottom:8px;">
+          选中: <span id="part-selected-name" style="font-family:ui-monospace,Menlo,monospace; color:#6cf;">—</span>
+          <button id="part-reset" style="float:right; background:#333; border:1px solid #444; color:#aaa; font-size:10px; padding:2px 6px; border-radius:3px; cursor:pointer;">还原</button>
+        </div>
+        <div class="row"><label>X偏移</label><input type="range" id="part-x" min="-2" max="2" step="0.01" value="0"><span class="value-display" id="part-x-val">0.00</span></div>
+        <div class="row"><label>Y偏移</label><input type="range" id="part-y" min="-2" max="2" step="0.01" value="0"><span class="value-display" id="part-y-val">0.00</span></div>
+        <div class="row"><label>Z偏移</label><input type="range" id="part-z" min="-2" max="2" step="0.01" value="0"><span class="value-display" id="part-z-val">0.00</span></div>
+        <div class="row"><label>缩放</label><input type="range" id="part-scale" min="0.1" max="3" step="0.01" value="1"><span class="value-display" id="part-scale-val">1.00</span></div>
+        <div class="row"><label>绕Y转</label><input type="range" id="part-roty" min="-3.14" max="3.14" step="0.05" value="0"><span class="value-display" id="part-roty-val">0.00</span></div>
+        <div class="row"><label>颜色类型</label><select id="part-color-mode"><option value="solid">纯色</option><option value="gradient">上下渐变</option></select></div>
+        <div class="row"><label>顶色</label><input type="color" id="part-color" value="#ffffff" style="height:28px; padding:0; cursor:pointer;"><button id="part-color-clear" style="background:#333; border:1px solid #444; color:#aaa; font-size:10px; padding:4px 8px; border-radius:3px; cursor:pointer;">还原</button></div>
+        <div class="row" id="part-color-bottom-row" style="display:none;"><label>底色</label><input type="color" id="part-color-bottom" value="#000000" style="height:28px; padding:0; cursor:pointer;"></div>
+        <button class="btn btn-full" id="part-mirror" style="margin-top:6px;">↔ 镜像到对侧 (Left↔Right)</button>
+        <button class="btn btn-full" id="part-copy-mat" style="margin-top:4px;">📋 复制此部件的材质</button>
+        <button class="btn btn-full" id="part-paste-mat" style="margin-top:4px;" disabled>📋 粘贴材质 (共享,有斑块)</button>
+        <button class="btn btn-full" id="part-paste-uvbake" style="margin-top:4px;" disabled>🔗 粘贴贴图 (UV 烘焙,推荐)</button>
+        <button class="btn btn-full" id="part-paste-avg" style="margin-top:4px;" disabled>🎨 粘贴平均色 (纯色,备选)</button>
+        <div id="mat-clipboard-info" style="font-size:10px; color:#888; margin-top:4px;">材质剪贴板: 空</div>
+      </div>
+      <div style="font-size:11px; color:#888; margin-top:6px;">
+        点部件名选中→拖滑块。X/Y/Z 单位是世界坐标。试 <code>tripo_part_6</code>/<code>tripo_part_7</code> 等小 part 找原胳膊。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🩹 网格修补</div>
+      <button class="btn btn-full" id="smooth-nose-mesh">🔧 拉普拉斯平滑(推荐)</button>
+      <button class="btn btn-full" id="add-nose-patch" style="margin-top:4px;">+ 添加补丁球(备选)</button>
+      <div style="font-size:11px; color:#888; margin-top:6px;">
+        平滑: 把鼻头区域的尖刺顶点拉向邻居平均位置,洞会闭合,不留补丁。
+        球补丁: 直接在鼻头位置生成黑球盖住破损。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🦾 嫁接胳膊 (实验)</div>
+      <button class="btn btn-full" id="graft-arms">生成 T-pose 胶囊胳膊</button>
+      <button class="btn btn-full" id="ungraft-arms" style="margin-top:4px;">移除胳膊</button>
+      <div style="font-size: 11px; color: #888; margin-top: 8px; line-height: 1.5;">
+        在肩膀位置生成水平伸开的两根胶囊胳膊(T-pose),颜色匹配身体。
+        <b>不是从 Pastel Pup 抠的</b> —— 那种空间切割实际效果太差,改用干净的几何体。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🦴 骨骼精调</div>
+      <div class="row">
+        <label>选骨骼</label>
+        <select id="bone-select"><option value="">— 先点自动绑骨 —</option></select>
+      </div>
+      <div id="bone-controls" style="display:none; margin-top:8px;">
+        <label class="checkbox-row" style="font-size:11px;"><input type="checkbox" id="bone-mirror" checked /> 自动镜像 L↔R (X 反向)</label>
+        <div class="row"><label>X偏移</label><input type="range" id="bone-x" min="-1" max="1" step="0.005" value="0"><span class="value-display" id="bone-x-val">0.000</span></div>
+        <div class="row"><label>Y偏移</label><input type="range" id="bone-y" min="-1" max="1" step="0.005" value="0"><span class="value-display" id="bone-y-val">0.000</span></div>
+        <div class="row"><label>Z偏移</label><input type="range" id="bone-z" min="-1" max="1" step="0.005" value="0"><span class="value-display" id="bone-z-val">0.000</span></div>
+        <div class="btn-grid" style="grid-template-columns: 1fr 1fr; margin-top:6px;">
+          <button class="btn" id="bone-reset">还原此骨</button>
+          <button class="btn" id="bone-reset-all">还原全部</button>
+        </div>
+      </div>
+      <div style="font-size:11px; color:#888; margin-top:6px;">
+        改的是骨骼<b>本地位置</b>(相对父骨骼)。L/R 自动镜像意味着调左肩,右肩自动反向同步。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🦴 自动绑骨 (实验)</div>
+      <button class="btn btn-full" id="auto-rig">给模型绑 17 骨骨架</button>
+      <button class="btn btn-full" id="clear-rig" style="margin-top:4px; background:#3a2424; border-color:#5a3434;">🗑 清除骨骼 (恢复未绑骨状态)</button>
+      <div style="font-size: 11px; color: #888; margin-top: 8px; line-height: 1.5;">
+        给无骨骼模型自动加上 头/脊柱/Hip/双腿 共 5 根骨骼,并附 5 段程序动画。
+        <b>仅适用于人形/玩偶类模型</b>(头在上、腿在下)。
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🔗 给模型绑骨</div>
+      <a class="link-btn" href="https://www.mixamo.com" target="_blank">前往 Mixamo →</a>
+      <div style="font-size: 11px; color: #888; margin-top: 8px; line-height: 1.5;">
+        无骨骼模型 → 上传 Mixamo → 自动绑骨 → 选动作下载（"With Skin" 或 "Without Skin"）→ 拖回此工具
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------- Scene setup ----------
+const wrap = document.getElementById('canvas-wrap');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a2a2a);
+
+const camera = new THREE.PerspectiveCamera(45, wrap.clientWidth / wrap.clientHeight, 0.01, 1000);
+camera.position.set(2, 1.5, 3);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(0, 0, 0);
+
+// PMREM for env reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envScene = new RoomEnvironment(renderer);
+const envTex = pmrem.fromScene(envScene, 0.04).texture;
+scene.environment = envTex;
+
+// ---------- Lights & helpers ----------
+const lightGroup = new THREE.Group();
+scene.add(lightGroup);
+
+const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
+keyLight.position.set(5, 10, 7);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -5;
+keyLight.shadow.camera.right = 5;
+keyLight.shadow.camera.top = 5;
+keyLight.shadow.camera.bottom = -5;
+keyLight.shadow.bias = -0.0005;
+const fillLight = new THREE.DirectionalLight(0x88aaff, 0.4);
+fillLight.position.set(-5, 4, -3);
+const rimLight = new THREE.DirectionalLight(0xffeecc, 0.6);
+rimLight.position.set(0, 5, -8);
+lightGroup.add(ambient, keyLight, fillLight, rimLight);
+
+// Ground grid
+const grid = new THREE.GridHelper(10, 20, 0x444444, 0x303030);
+grid.material.transparent = true;
+grid.material.opacity = 0.6;
+scene.add(grid);
+
+// Skeleton helper container
+let skeletonHelper = null;
+
+// ---------- Loaders ----------
+const loaders = {
+  fbx: new FBXLoader(),
+  gltf: new GLTFLoader(),
+  obj: new OBJLoader(),
+};
+
+let currentModel = null;
+let currentMixer = null;
+let currentClips = [];        // THREE.AnimationClip[]
+let currentAction = null;
+let modelBox = null;
+let modelCenter = new THREE.Vector3();
+let modelSize = 1;
+const matShaders = [];        // material shaders to drive saturation/brightness/etc.
+const matUniforms = {
+  uSat:    { value: 1.0 },
+  uBright: { value: 1.0 },
+  uWhite:  { value: 0.0 },
+};
+
+// ---------- Loading ----------
+async function loadFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const url = URL.createObjectURL(file);
+  showStats(`加载中… ${file.name}`);
+
+  try {
+    let result;
+    if (ext === 'fbx') {
+      result = await loaders.fbx.loadAsync(url);
+      // FBXLoader returns a Group with .animations
+      handleLoaded(result, result.animations || []);
+    } else if (ext === 'glb' || ext === 'gltf') {
+      const gltf = await loaders.gltf.loadAsync(url);
+      handleLoaded(gltf.scene, gltf.animations || []);
+    } else if (ext === 'obj') {
+      const obj = await loaders.obj.loadAsync(url);
+      handleLoaded(obj, []);
+    } else {
+      alert('不支持的格式: .' + ext);
+    }
+  } catch (e) {
+    console.error(e);
+    alert('加载失败: ' + e.message);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// Load directly from a URL (used for the bundled default model)
+async function loadFromUrl(url, displayName) {
+  const ext = url.split('?')[0].split('.').pop().toLowerCase();
+  showStats(`加载默认模型… ${displayName || url}`);
+  document.getElementById('filename-main').textContent = displayName || url;
+  try {
+    if (ext === 'fbx') {
+      const result = await loaders.fbx.loadAsync(url);
+      handleLoaded(result, result.animations || []);
+    } else if (ext === 'glb' || ext === 'gltf') {
+      const gltf = await loaders.gltf.loadAsync(url);
+      handleLoaded(gltf.scene, gltf.animations || []);
+    } else if (ext === 'obj') {
+      const obj = await loaders.obj.loadAsync(url);
+      handleLoaded(obj, []);
+    }
+  } catch (e) {
+    console.warn('默认模型加载失败,跳过:', e.message);
+  }
+}
+
+// Override FBX-embedded JPEG textures with high-res external PNGs (PBR set).
+// Meshy's FBX exports JPEG-compressed textures (~2MB) and drops metallic/roughness
+// maps; the ZIP ships lossless PNGs (~5MB each) plus full PBR set. Use the PNGs.
+async function applyExternalPBR(model, basePath, names) {
+  const loader = new THREE.TextureLoader();
+  const sample = (() => {
+    let found = null;
+    model.traverse(o => { if (!found && o.isMesh && o.material?.map) found = o.material.map; });
+    return found;
+  })();
+  const cloneSettings = (tex) => {
+    if (!tex || !sample) return;
+    tex.flipY  = sample.flipY;
+    tex.wrapS  = sample.wrapS;
+    tex.wrapT  = sample.wrapT;
+    tex.repeat.copy(sample.repeat);
+    tex.offset.copy(sample.offset);
+    tex.center.copy(sample.center);
+    tex.rotation = sample.rotation;
+  };
+  const load = (name, srgb) => loader.loadAsync(basePath + name)
+    .then(t => { t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; cloneSettings(t); return t; })
+    .catch(() => null);
+
+  const [baseTex, normalTex, metalTex, roughTex, emitTex] = await Promise.all([
+    load(names.base,      true),
+    load(names.normal,    false),
+    load(names.metallic,  false),
+    load(names.roughness, false),
+    load(names.emission,  true),
+  ]);
+
+  let upgraded = 0;
+  model.traverse(obj => {
+    if (!obj.isMesh) return;
+    const mats = obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : [];
+    obj.material = mats.map(m => {
+      // FBXLoader produces MeshPhongMaterial; promote to MeshStandardMaterial for PBR.
+      const std = new THREE.MeshStandardMaterial({
+        name: m.name,
+        map:          baseTex   ?? m.map,
+        normalMap:    normalTex ?? m.normalMap,
+        metalnessMap: metalTex  ?? null,
+        roughnessMap: roughTex  ?? null,
+        emissiveMap:  emitTex   ?? m.emissiveMap,
+        metalness: metalTex ? 1.0 : 0.0,
+        roughness: roughTex ? 1.0 : 0.85,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0,
+        side: m.side,
+        transparent: m.transparent,
+        opacity: m.opacity,
+      });
+      // Re-hook saturation/brightness/whitening shader on the new material.
+      hookMaterial(std);
+      upgraded++;
+      // Dispose old material's resources we're not reusing.
+      try { m.dispose(); } catch (_) {}
+      return std;
+    });
+    if (obj.material.length === 1) obj.material = obj.material[0];
+  });
+  console.log(`[PBR] upgraded ${upgraded} material(s) to MeshStandardMaterial`);
+}
+
+function handleLoaded(root, clips) {
+  // Remove previous model
+  if (currentModel) {
+    scene.remove(currentModel);
+    disposeObject(currentModel);
+  }
+  if (skeletonHelper) {
+    scene.remove(skeletonHelper);
+    skeletonHelper = null;
+  }
+
+  currentModel = root;
+
+  // Configure shadows + materials
+  let triCount = 0, vertCount = 0, hasBones = false;
+  matShaders.length = 0;
+  root.traverse(obj => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      if (obj.geometry) {
+        const pos = obj.geometry.attributes.position;
+        if (pos) vertCount += pos.count;
+        const idx = obj.geometry.index;
+        triCount += idx ? idx.count / 3 : (pos ? pos.count / 3 : 0);
+      }
+      if (obj.skeleton) hasBones = true;
+      // Hook material for saturation/brightness/whitening
+      const mats = obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : [];
+      mats.forEach(m => hookMaterial(m));
+    }
+    if (obj.isBone) {
+      hasBones = true;
+      // 捕获 rest 朝向(此刻尚无动画播放),供「自由摆姿势」重置使用
+      obj.userData.restQuat = obj.quaternion.clone();
+    }
+  });
+
+  // Center & scale
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  modelSize = Math.max(size.x, size.y, size.z);
+  modelCenter.copy(center);
+
+  // Auto-scale to a reasonable visible size (target ~2 units)
+  if (modelSize > 0) {
+    const s = 2.0 / modelSize;
+    root.scale.setScalar(s);
+    root.position.sub(center.multiplyScalar(s));
+    // recompute box after scaling
+    box.setFromObject(root);
+    const newCenter = box.getCenter(new THREE.Vector3());
+    const newSize = box.getSize(new THREE.Vector3());
+    // place feet on ground (y_min = 0)
+    root.position.y -= box.min.y;
+    modelSize = Math.max(newSize.x, newSize.y, newSize.z);
+    modelCenter.set(0, modelSize * 0.5, 0);
+  }
+
+  scene.add(root);
+  modelBox = box;
+
+  // Animations
+  currentClips = clips;
+  if (currentMixer) currentMixer.stopAllAction();
+  currentMixer = clips.length > 0 ? new THREE.AnimationMixer(root) : null;
+  currentAction = null;
+  populateAnimList();
+
+  // Skeleton helper
+  if (hasBones) {
+    skeletonHelper = new THREE.SkeletonHelper(root);
+    skeletonHelper.visible = document.getElementById('show-skeleton').checked;
+    scene.add(skeletonHelper);
+  }
+  document.getElementById('anim-import-section').style.display = hasBones ? 'block' : 'none';
+
+  // Show notice if unrigged
+  const noticeEl = document.getElementById('notice');
+  if (!hasBones) {
+    noticeEl.innerHTML = `⚠️ 该模型<b>没有骨骼</b>,无法切换动作。要换动作:把它上传到 <a href="https://www.mixamo.com" target="_blank">Mixamo</a> 自动绑骨,选动作下载,再拖回这里。`;
+    noticeEl.classList.add('show');
+  } else if (clips.length === 0) {
+    noticeEl.innerHTML = `ℹ️ 模型有骨骼但没有动画。可以从 Mixamo 下载多个动作的 FBX,通过左边「追加动画文件」加载进来。`;
+    noticeEl.classList.add('show');
+  } else {
+    noticeEl.classList.remove('show');
+  }
+
+  // Stats
+  showStats(
+    `<b>${root.name || '模型'}</b><br>` +
+    `顶点: ${vertCount.toLocaleString()}<br>` +
+    `三角面: ${Math.round(triCount).toLocaleString()}<br>` +
+    `骨骼: ${hasBones ? '✓' : '✗'}<br>` +
+    `动画: ${clips.length}`
+  );
+
+  // Hide empty state
+  document.getElementById('empty-state').style.display = 'none';
+
+  applyView('iso');
+  applyWireframe();
+}
+
+function populateAnimList() {
+  const grid = document.getElementById('anim-buttons');
+  grid.innerHTML = '';
+  if (currentClips.length === 0) {
+    const b = document.createElement('button');
+    b.className = 'btn active';
+    b.textContent = '静止';
+    b.dataset.anim = '__none__';
+    b.addEventListener('click', () => selectAnim('__none__', '静止'));
+    grid.appendChild(b);
+    document.getElementById('playbar').classList.add('hidden');
+    return;
+  }
+  const mkBtn = (val, label) => {
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.dataset.anim = val;
+    b.textContent = label;
+    b.addEventListener('click', () => selectAnim(val, label));
+    grid.appendChild(b);
+    return b;
+  };
+  mkBtn('__none__', '静止');
+  currentClips.forEach((clip, i) => mkBtn(String(i), clip.name || `动画 ${i + 1}`));
+  document.getElementById('playbar').classList.remove('hidden');
+  // auto-play first clip
+  selectAnim('0', currentClips[0].name || '动画 1');
+}
+
+function selectAnim(value, name) {
+  playClip(value);
+  document.querySelectorAll('#anim-buttons .btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.anim === value);
+  });
+  if (document.getElementById('face-anim-link')?.checked) {
+    lastTimelineFace = null;
+    if (animFaceTimeline[name]) return;
+    const face = faceMap[name];
+    if (face) {
+      const fs = document.getElementById('face-select');
+      if (fs) fs.value = face;
+      applyJoyFace(face);
+    }
+  }
+}
+
+function playClip(index) {
+  if (!currentMixer) return;
+  // stop previous
+  if (currentAction) currentAction.fadeOut(0.2);
+  if (index === '__none__' || index === null) {
+    currentAction = null;
+    return;
+  }
+  const clip = currentClips[+index];
+  if (!clip) return;
+  const action = currentMixer.clipAction(clip);
+  action.reset();
+  action.setLoop(document.getElementById('loop-toggle').checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+  action.clampWhenFinished = true;
+  action.fadeIn(0.2);
+  action.play();
+  currentAction = action;
+}
+
+async function loadAnimationFile(file) {
+  if (!currentModel || !skeletonHelper) {
+    alert('请先加载一个有骨骼的模型作为基础(主模型)');
+    return;
+  }
+  const ext = file.name.split('.').pop().toLowerCase();
+  const url = URL.createObjectURL(file);
+  try {
+    let clips = [];
+    if (ext === 'fbx') {
+      const res = await loaders.fbx.loadAsync(url);
+      clips = res.animations || [];
+      // Rename clips by file name if unnamed
+      clips.forEach((c, i) => {
+        if (!c.name || c.name === 'Take 001' || c.name === 'mixamo.com') {
+          c.name = file.name.replace(/\.[^.]+$/, '') + (clips.length > 1 ? `_${i+1}` : '');
+        }
+      });
+    } else {
+      const gltf = await loaders.gltf.loadAsync(url);
+      clips = gltf.animations || [];
+      clips.forEach((c, i) => {
+        if (!c.name) c.name = file.name.replace(/\.[^.]+$/, '') + (clips.length > 1 ? `_${i+1}` : '');
+      });
+    }
+    if (clips.length === 0) {
+      alert(`${file.name} 中没有动画`);
+      return;
+    }
+    currentClips = currentClips.concat(clips);
+    populateAnimList();
+    document.getElementById('filename-anim').textContent = `+ ${clips.length} 个动作 (${file.name})`;
+  } catch (e) {
+    console.error(e);
+    alert('加载动画失败: ' + e.message);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// ---------- Camera presets ----------
+function applyView(view) {
+  if (!modelBox) return;
+  const r = modelSize * 1.6;
+  const center = modelCenter.clone();
+  let pos;
+  switch (view) {
+    case 'front':  pos = new THREE.Vector3(0, center.y, r); break;
+    case 'back':   pos = new THREE.Vector3(0, center.y, -r); break;
+    case 'left':   pos = new THREE.Vector3(-r, center.y, 0); break;
+    case 'right':  pos = new THREE.Vector3( r, center.y, 0); break;
+    case 'top':    pos = new THREE.Vector3(0, r, 0.001); break;
+    case 'bottom': pos = new THREE.Vector3(0, -r, 0.001); break;
+    case 'iso':    pos = new THREE.Vector3(r*0.7, center.y + r*0.4, r*0.7); break;
+    case 'iso2':   pos = new THREE.Vector3(-r*0.7, center.y + r*0.4, r*0.7); break;
+    case 'reset':
+    default:       pos = new THREE.Vector3(r*0.7, center.y + r*0.4, r*0.7); break;
+  }
+  camera.position.copy(pos);
+  controls.target.copy(center);
+  controls.update();
+}
+
+// ---------- UI ----------
+function showStats(html) {
+  document.getElementById('stats').innerHTML = html;
+}
+
+document.querySelectorAll('button[data-view]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('button[data-view]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    applyView(b.dataset.view);
+  });
+});
+
+// 焦段切换:换 FOV + 沿视线方向调整距离,保持主体框幅
+// 35mm 全画幅传感器高度 24mm,纵向 FOV = 2*atan(12/f)
+function fovFromFocal(mm) {
+  return THREE.MathUtils.radToDeg(2 * Math.atan(12 / mm));
+}
+function setFocalLength(mm) {
+  const newFov = fovFromFocal(mm);
+  const oldFov = camera.fov;
+  const target = controls.target;
+  const dir = camera.position.clone().sub(target);
+  const dist = dir.length();
+  // 距离按 tan(half-fov) 反比缩放,框幅不变
+  const scale = Math.tan(THREE.MathUtils.degToRad(oldFov / 2)) /
+                Math.tan(THREE.MathUtils.degToRad(newFov / 2));
+  const newDist = THREE.MathUtils.clamp(dist * scale, 0.5, 50);
+  dir.setLength(newDist);
+  camera.position.copy(target).add(dir);
+  camera.fov = newFov;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+// 启动时把默认 45° 折算到 50mm 锚点,避免首次切换跳动
+camera.fov = fovFromFocal(50);
+camera.updateProjectionMatrix();
+document.querySelectorAll('button[data-focal]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('button[data-focal]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    setFocalLength(parseFloat(b.dataset.focal));
+  });
+});
+
+const faceMap = {
+  '走路':'05眨眼大笑',
+  '坐下':'01微笑',
+  '蹦跑':'02大笑',
+  '打招呼':'04眨单眼大笑',
+  '点头':'14眯眼微笑',
+  '摇头':'15无奈',
+  '跳跃':'18愉悦',
+  '转圈':'10星星眼',
+  '失落':'23困',
+  '难过':'24难过',
+  '生气':'25生气',
+  '害羞':'03脸红',
+  '撒娇':'21爱心眼',
+  '疑惑':'22呆住',
+  '呼吸':'01微笑',
+  '打哈欠':'16嘟嘴困',
+  '惊讶':'22呆住',
+  '鞠躬':'14眯眼微笑',
+  '跳舞':'06小开心',
+  '思考':'11嘟嘴',
+  '左顾右盼':'01微笑',
+  '歪头卖萌':'10星星眼',
+  '摇尾巴':'05眨眼大笑',
+  '抖耳朵':'22呆住',
+  '伸懒腰':'15无奈',
+  '左右摇摆':'06小开心'
+};
+
+document.getElementById('loop-toggle').addEventListener('change', e => {
+  if (currentAction) {
+    currentAction.setLoop(e.target.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+  }
+});
+
+document.getElementById('exposure').addEventListener('input', e => {
+  renderer.toneMappingExposure = parseFloat(e.target.value);
+  document.getElementById('exposure-val').textContent = parseFloat(e.target.value).toFixed(2);
+});
+
+document.getElementById('env-select').addEventListener('change', e => {
+  applyEnv(e.target.value);
+});
+
+function applyEnv(preset) {
+  // adjust light positions/intensities
+  switch (preset) {
+    case 'studio':
+      ambient.intensity = 0.4; keyLight.intensity = 1.4; fillLight.intensity = 0.4; rimLight.intensity = 0.6;
+      keyLight.color.set(0xffffff); fillLight.color.set(0x88aaff); rimLight.color.set(0xffeecc);
+      break;
+    case 'outdoor':
+      ambient.intensity = 0.6; keyLight.intensity = 2.0; fillLight.intensity = 0.6; rimLight.intensity = 0.3;
+      keyLight.color.set(0xfff4e0); fillLight.color.set(0x99bbee); rimLight.color.set(0xffffff);
+      break;
+    case 'sunset':
+      ambient.intensity = 0.3; keyLight.intensity = 1.6; fillLight.intensity = 0.3; rimLight.intensity = 0.8;
+      keyLight.color.set(0xffaa66); fillLight.color.set(0x6688cc); rimLight.color.set(0xff7744);
+      break;
+    case 'night':
+      ambient.intensity = 0.15; keyLight.intensity = 0.6; fillLight.intensity = 0.4; rimLight.intensity = 0.5;
+      keyLight.color.set(0x88aaff); fillLight.color.set(0x4466aa); rimLight.color.set(0xaaccff);
+      break;
+    case 'flat':
+      ambient.intensity = 1.5; keyLight.intensity = 0.0; fillLight.intensity = 0.0; rimLight.intensity = 0.0;
+      break;
+  }
+}
+
+document.getElementById('bg-select').addEventListener('change', e => {
+  const v = e.target.value;
+  document.getElementById('bg-color-row').style.display = v === 'custom' ? 'flex' : 'none';
+  applyBackground(v);
+});
+
+function applyBackground(v) {
+  const bgImg = document.getElementById('bg-img');
+  // 非图片模式:隐藏 HTML 背景层
+  if (v !== 'image') bgImg.style.display = 'none';
+  switch (v) {
+    case 'dark':     scene.background = new THREE.Color(0x2a2a2a); break;
+    case 'light':    scene.background = new THREE.Color(0xcccccc); break;
+    case 'white':    scene.background = new THREE.Color(0xffffff); break;
+    case 'black':    scene.background = new THREE.Color(0x000000); break;
+    case 'env':      scene.background = envTex; break;
+    case 'gradient': {
+      const tex = makeGradientTexture('#3a4a6a', '#1a1a2a');
+      scene.background = tex;
+      break;
+    }
+    case 'custom':   scene.background = new THREE.Color(document.getElementById('bg-color').value); break;
+    case 'image':
+      if (bgImageURL) {
+        scene.background = null;           // 画布透明,露出后面的 HTML 图
+        bgImg.style.display = 'block';     // object-fit:contain 保持原始比例
+      } else {
+        document.getElementById('bg-image').click(); // 还没上传则弹出选择
+      }
+      break;
+  }
+}
+
+// 上传背景图(HTML 层,保持原始比例,静态不随 3D 投影)
+let bgImageURL = null;
+document.getElementById('bg-image').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  if (bgImageURL) URL.revokeObjectURL(bgImageURL);
+  bgImageURL = URL.createObjectURL(file);
+  const bgImg = document.getElementById('bg-img');
+  bgImg.src = bgImageURL;
+  bgImg.style.display = 'block';
+  scene.background = null;
+  document.getElementById('bg-select').value = 'image';
+  document.getElementById('bg-color-row').style.display = 'none';
+});
+
+// 背景图移动/缩放
+let bgX = 0, bgY = 0, bgScale = 1, bgMoveMode = false;
+function applyBgTransform() {
+  const bgImg = document.getElementById('bg-img');
+  bgImg.style.transform = `translate(${bgX}px, ${bgY}px) scale(${bgScale})`;
+}
+document.getElementById('bg-move-toggle').addEventListener('click', () => {
+  bgMoveMode = !bgMoveMode;
+  const btn = document.getElementById('bg-move-toggle');
+  btn.classList.toggle('active', bgMoveMode);
+  controls.enabled = !bgMoveMode;       // 调整背景时禁用相机旋转
+  renderer.domElement.style.cursor = bgMoveMode ? 'move' : '';
+});
+document.getElementById('bg-move-reset').addEventListener('click', () => {
+  bgX = 0; bgY = 0; bgScale = 1; applyBgTransform();
+});
+// 拖动平移
+let bgDragging = false, bgLastX = 0, bgLastY = 0;
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (!bgMoveMode) return;
+  bgDragging = true; bgLastX = e.clientX; bgLastY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!bgMoveMode || !bgDragging) return;
+  bgX += e.clientX - bgLastX; bgY += e.clientY - bgLastY;
+  bgLastX = e.clientX; bgLastY = e.clientY;
+  applyBgTransform();
+});
+renderer.domElement.addEventListener('pointerup', e => {
+  bgDragging = false;
+  try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
+});
+// 滚轮缩放
+renderer.domElement.addEventListener('wheel', e => {
+  if (!bgMoveMode) return;
+  e.preventDefault();
+  bgScale *= e.deltaY < 0 ? 1.06 : 1 / 1.06;
+  bgScale = Math.max(0.2, Math.min(8, bgScale));
+  applyBgTransform();
+}, { passive: false });
+
+function makeGradientTexture(top, bottom) {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, top); g.addColorStop(1, bottom);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 4, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+document.getElementById('bg-color').addEventListener('input', e => {
+  scene.background = new THREE.Color(e.target.value);
+});
+
+document.getElementById('show-grid').addEventListener('change', e => grid.visible = e.target.checked);
+document.getElementById('show-skeleton').addEventListener('change', e => {
+  if (skeletonHelper) skeletonHelper.visible = e.target.checked;
+});
+document.getElementById('auto-rotate').addEventListener('change', e => {
+  controls.autoRotate = e.target.checked;
+  controls.autoRotateSpeed = 1.0;
+});
+document.getElementById('wireframe').addEventListener('change', applyWireframe);
+
+function applyWireframe() {
+  const wf = document.getElementById('wireframe').checked;
+  if (!currentModel) return;
+  currentModel.traverse(obj => {
+    if (obj.isMesh && obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(m => { m.wireframe = wf; });
+    }
+  });
+}
+
+// ---------- Material shader hook (saturation / brightness / whitening / emission) ----------
+function hookMaterial(m) {
+  if (!m || m.userData.__hooked) return;
+  m.userData.__hooked = true;
+  // Default emissive tweaks: kill the rainbow emission baked by Meshy
+  if (m.emissive) m.emissive.setRGB(1, 1, 1);
+  m.emissiveIntensity = parseFloat(document.getElementById('mat-emit').value || '0');
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (shader) => {
+    if (prev) prev(shader);
+    shader.uniforms.uSat    = matUniforms.uSat;
+    shader.uniforms.uBright = matUniforms.uBright;
+    shader.uniforms.uWhite  = matUniforms.uWhite;
+    // Prepend uniform declarations at the top of the fragment shader.
+    // (onBeforeCompile only wires JS-side uniform values; GLSL still needs explicit decls.)
+    shader.fragmentShader =
+      'uniform float uSat;\nuniform float uBright;\nuniform float uWhite;\n' +
+      shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+       {
+         float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+         // 1) Desaturate the rainbow body
+         diffuseColor.rgb = mix(vec3(lum), diffuseColor.rgb, uSat);
+         // 2) Brightness boost
+         diffuseColor.rgb *= uBright;
+         // 3) Push toward white, but ONLY for bright pixels.
+         //    smoothstep(0.35, 0.85, lum) preserves dark areas (eyes/nose/mouth) at black.
+         float whiteMask = smoothstep(0.35, 0.85, lum) * uWhite;
+         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), whiteMask);
+       }`
+    );
+    matShaders.push(shader);
+  };
+  m.needsUpdate = true;
+}
+
+// Sliders
+function bindSlider(id, valId, uniformKey, transform = v => v) {
+  const el = document.getElementById(id);
+  const valEl = document.getElementById(valId);
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    valEl.textContent = v.toFixed(2);
+    matUniforms[uniformKey].value = transform(v);
+  });
+}
+bindSlider('mat-sat',   'mat-sat-val',   'uSat');
+bindSlider('mat-bright','mat-bright-val','uBright');
+bindSlider('mat-white', 'mat-white-val', 'uWhite');
+
+document.getElementById('mat-emit').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  document.getElementById('mat-emit-val').textContent = v.toFixed(2);
+  if (!currentModel) return;
+  currentModel.traverse(obj => {
+    if (obj.isMesh && obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(m => { m.emissiveIntensity = v; });
+    }
+  });
+});
+
+document.getElementById('preset-meshy').addEventListener('click', () => {
+  // User-tuned: full saturation kept, brightness halved, no whitening or emission.
+  setSlider('mat-sat',    1.0);
+  setSlider('mat-bright', 0.5);
+  setSlider('mat-white',  0);
+  setSlider('mat-emit',   0);
+  document.getElementById('env-select').value = 'flat';
+  applyEnv('flat');
+  document.getElementById('exposure').value = 1.15;
+  document.getElementById('exposure-val').textContent = '1.15';
+  renderer.toneMappingExposure = 1.15;
+  document.getElementById('bg-select').value = 'dark';
+  applyBackground('dark');
+});
+
+// ---------- Render style switching ----------
+// PBR is the default (MeshStandardMaterial with our saturation/brightness/whiten
+// shader hooks). Other styles swap each material to a flat/cartoon variant.
+// We snapshot the original material on first switch so we can restore PBR.
+const __origPbrMaterials = new WeakMap();
+let __toonGradientTex = null;
+function __getToonGradient() {
+  if (__toonGradientTex) return __toonGradientTex;
+  // 4-band cartoon shading ramp (dark → mid → bright → highlight)
+  const data = new Uint8Array([60, 60, 60, 255, 130, 130, 130, 255, 200, 200, 200, 255, 255, 255, 255, 255]);
+  const t = new THREE.DataTexture(data, 4, 1, THREE.RGBAFormat);
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  __toonGradientTex = t;
+  return t;
+}
+function applyRenderStyle(style) {
+  const apply = (mesh) => {
+    if (!__origPbrMaterials.has(mesh)) __origPbrMaterials.set(mesh, mesh.material);
+    const orig = __origPbrMaterials.get(mesh);
+    if (style === 'pbr') { mesh.material = orig; return; }
+    const oldMats = Array.isArray(orig) ? orig : [orig];
+    const newMats = oldMats.map(old => {
+      const params = {
+        name: old.name,
+        color: old.color?.clone() ?? new THREE.Color(0xffffff),
+        map: old.map ?? null,
+        side: old.side,
+        transparent: old.transparent ?? false,
+        opacity: old.opacity ?? 1,
+      };
+      if (style === 'unlit')   return new THREE.MeshBasicMaterial(params);
+      if (style === 'lambert') return new THREE.MeshLambertMaterial(params);
+      if (style === 'toon')    return new THREE.MeshToonMaterial({ ...params, gradientMap: __getToonGradient() });
+      return old;
+    });
+    mesh.material = Array.isArray(orig) ? newMats : newMats[0];
+  };
+  if (currentModel) currentModel.traverse(o => { if (o.isMesh || o.isSkinnedMesh) apply(o); });
+  for (const a of graftedArms) apply(a);
+}
+document.getElementById('render-style').addEventListener('change', e => applyRenderStyle(e.target.value));
+document.getElementById('preset-reset').addEventListener('click', () => {
+  setSlider('mat-sat',    1);
+  setSlider('mat-bright', 1);
+  setSlider('mat-white',  0);
+  setSlider('mat-emit',   0);
+});
+
+function setSlider(id, v) {
+  const el = document.getElementById(id);
+  el.value = v;
+  el.dispatchEvent(new Event('input'));
+}
+
+// ---------- Auto-rigging (browser-side, no Mixamo) ----------
+// Builds a 5-bone skeleton (Hip → Spine → Head, plus LegL / LegR off Hip),
+// computes skin weights by Y-banding + X-side, swaps the Mesh for a SkinnedMesh,
+// and attaches procedural animation clips. Only sensible for upright biped/toy shapes.
+function autoRig() {
+  if (!currentModel) { alert('先加载模型'); return; }
+
+  // Collect ALL non-skinned meshes (Tripo segments models into a body shell +
+  // facial detail parts; we want to rig each one with the shared skeleton).
+  const meshes = [];
+  currentModel.traverse(o => {
+    if (o.isMesh && !o.isSkinnedMesh) meshes.push(o);
+  });
+  if (meshes.length === 0) { alert('找不到可绑骨的网格(或已经绑骨)'); return; }
+
+  // Combined world bbox so bone Y bands span every mesh
+  currentModel.updateMatrixWorld(true);
+  const wbb = new THREE.Box3().setFromObject(currentModel);
+  const wsize = wbb.max.clone().sub(wbb.min);
+  const wcx = (wbb.min.x + wbb.max.x) / 2;
+  const wcz = (wbb.min.z + wbb.max.z) / 2;
+
+  // ---- 17-bone humanoid skeleton ----
+  // Y proportions tuned for chibi/stylized characters where the head occupies
+  // ~half of the model's height (Tripo dog, Meshy avatars, etc.). Body bones
+  // live in the lower ~55%. yShoulderW must match graftArms's `shoulderY`
+  // (capsule arm placement) so UpperArm bone pivot lines up with the arm.
+  const yFootW     = wbb.min.y + wsize.y * 0.019;
+  const yKneeW     = wbb.min.y + wsize.y * 0.197;
+  const yHipW      = wbb.min.y + wsize.y * 0.328;
+  const yChestW    = wbb.min.y + wsize.y * 0.429;
+  const yShoulderW = wbb.min.y + wsize.y * 0.477;
+  const yNeckW     = wbb.min.y + wsize.y * 0.535;
+  const yHeadW     = wbb.min.y + wsize.y * 0.819;
+
+  const xLegOffset      = wsize.x * 0.082;
+  const xShoulderOffset = wsize.x * 0.123;
+  const xUpperArmExt    = wsize.x * 0.123;
+  const xLowerArmExt    = wsize.x * 0.123;
+
+  // ---- Build hierarchy (root in scene, everything else is child of parent bone) ----
+  const root      = new THREE.Bone(); root.name      = 'Root';
+  const hip       = new THREE.Bone(); hip.name       = 'Hip';        root.add(hip);
+  const spine     = new THREE.Bone(); spine.name     = 'Spine';      hip.add(spine);
+  const neck      = new THREE.Bone(); neck.name      = 'Neck';       spine.add(neck);
+  const head      = new THREE.Bone(); head.name      = 'Head';       neck.add(head);
+
+  // Arms — children of Spine, pivot near shoulder
+  const shoulderL = new THREE.Bone(); shoulderL.name = 'Shoulder_L'; spine.add(shoulderL);
+  const upperArmL = new THREE.Bone(); upperArmL.name = 'UpperArm_L'; shoulderL.add(upperArmL);
+  const lowerArmL = new THREE.Bone(); lowerArmL.name = 'LowerArm_L'; upperArmL.add(lowerArmL);
+
+  const shoulderR = new THREE.Bone(); shoulderR.name = 'Shoulder_R'; spine.add(shoulderR);
+  const upperArmR = new THREE.Bone(); upperArmR.name = 'UpperArm_R'; shoulderR.add(upperArmR);
+  const lowerArmR = new THREE.Bone(); lowerArmR.name = 'LowerArm_R'; upperArmR.add(lowerArmR);
+
+  // Legs — children of Hip
+  const upperLegL = new THREE.Bone(); upperLegL.name = 'UpperLeg_L'; hip.add(upperLegL);
+  const lowerLegL = new THREE.Bone(); lowerLegL.name = 'LowerLeg_L'; upperLegL.add(lowerLegL);
+  const footL     = new THREE.Bone(); footL.name     = 'Foot_L';     lowerLegL.add(footL);
+
+  const upperLegR = new THREE.Bone(); upperLegR.name = 'UpperLeg_R'; hip.add(upperLegR);
+  const lowerLegR = new THREE.Bone(); lowerLegR.name = 'LowerLeg_R'; upperLegR.add(lowerLegR);
+  const footR     = new THREE.Bone(); footR.name     = 'Foot_R';     lowerLegR.add(footR);
+
+  scene.add(root);
+
+  // ---- Local positions (each bone relative to parent) ----
+  hip.position.set(wcx, yHipW, wcz);
+  spine.position.set(0, yChestW - yHipW, 0);
+  neck.position.set(0, yNeckW - yChestW, 0);
+  head.position.set(0, yHeadW - yNeckW, 0);
+
+  shoulderL.position.set(-xShoulderOffset, yShoulderW - yChestW, 0);
+  upperArmL.position.set(-xUpperArmExt, 0, 0);
+  lowerArmL.position.set(-xLowerArmExt, 0, 0);
+  shoulderR.position.set( xShoulderOffset, yShoulderW - yChestW, 0);
+  upperArmR.position.set( xUpperArmExt, 0, 0);
+  lowerArmR.position.set( xLowerArmExt, 0, 0);
+
+  upperLegL.position.set(-xLegOffset, 0, 0);
+  lowerLegL.position.set(0, yKneeW - yHipW, 0);    // negative — descends to knee
+  footL.position.set(0, yFootW - yKneeW, 0);
+  upperLegR.position.set( xLegOffset, 0, 0);
+  lowerLegR.position.set(0, yKneeW - yHipW, 0);
+  footR.position.set(0, yFootW - yKneeW, 0);
+
+  root.updateMatrixWorld(true);
+
+  const bones = [
+    root, hip, spine, neck, head,                 // 0-4
+    shoulderL, upperArmL, lowerArmL,              // 5-7
+    shoulderR, upperArmR, lowerArmR,              // 8-10
+    upperLegL, lowerLegL, footL,                  // 11-13
+    upperLegR, lowerLegR, footR,                  // 14-16
+  ];
+  const IDX = {
+    ROOT:0, HIP:1, SPINE:2, NECK:3, HEAD:4,
+    SHOULDER_L:5, UPPER_ARM_L:6, LOWER_ARM_L:7,
+    SHOULDER_R:8, UPPER_ARM_R:9, LOWER_ARM_R:10,
+    UPPER_LEG_L:11, LOWER_LEG_L:12, FOOT_L:13,
+    UPPER_LEG_R:14, LOWER_LEG_R:15, FOOT_R:16,
+  };
+  const skeleton = new THREE.Skeleton(bones);
+
+  // Pre-compute world Y of each bone (for "closest bone" detail-part binding)
+  const boneYs = new Array(bones.length);
+  bones.forEach((b, i) => {
+    const wp = new THREE.Vector3();
+    b.getWorldPosition(wp);
+    boneYs[i] = wp.y;
+  });
+
+  // Find largest mesh (body shell)
+  let largestMesh = meshes[0], largestVerts = 0;
+  for (const m of meshes) {
+    const c = m.geometry.attributes.position?.count ?? 0;
+    if (c > largestVerts) { largestVerts = c; largestMesh = m; }
+  }
+
+  let totalVerts = 0;
+  for (const mesh of meshes) {
+    // TPose arms baked at correct position — skip skinning so UpperArm bone
+    // (computed from bbox-with-arms) doesn't drag them outside the body.
+    if (mesh.name === 'TPoseLeftArm' || mesh.name === 'TPoseRightArm') {
+      totalVerts += mesh.geometry.attributes.position?.count ?? 0;
+      continue;
+    }
+    const isMainBody = (mesh === largestMesh);
+    convertMeshToSkinned(mesh, skeleton, {
+      isMainBody, IDX, boneYs,
+      yFootW, yKneeW, yHipW, yChestW, yNeckW, yHeadW,
+      wcx, wsize,
+    });
+    totalVerts += mesh.geometry.attributes.position?.count ?? 0;
+  }
+
+  if (skeletonHelper) scene.remove(skeletonHelper);
+  skeletonHelper = new THREE.SkeletonHelper(root);
+  skeletonHelper.visible = document.getElementById('show-skeleton').checked;
+  scene.add(skeletonHelper);
+
+  currentClips = createProceduralAnimations();
+  if (currentMixer) currentMixer.stopAllAction();
+  currentMixer = new THREE.AnimationMixer(scene);
+  currentAction = null;
+  populateAnimList();
+
+  const noticeEl = document.getElementById('notice');
+  noticeEl.innerHTML = `✅ 绑骨完成! ${meshes.length} 个 part, ${totalVerts} 顶点 → ${bones.length} 根骨,${currentClips.length} 段动画。`;
+  noticeEl.style.background = 'rgba(60, 200, 100, 0.15)';
+  noticeEl.style.borderColor = 'rgba(60, 200, 100, 0.4)';
+  noticeEl.style.color = '#90e0a0';
+  noticeEl.classList.add('show');
+
+  console.log(`[AutoRig] ${meshes.length} parts, ${totalVerts} verts, ${bones.length} bones, mainBody=${largestMesh.name} (${largestVerts} verts)`);
+
+  // Snapshot bone rest positions + populate the bone-tuning dropdown
+  snapshotAllBones(bones);
+  refreshBoneList(bones);
+}
+
+// ---- Bone fine-tuning (per-bone position offsets, with L↔R mirroring) ----
+// We capture each bone's rest LOCAL position at autoRig time so sliders can
+// represent offsets relative to that. Moving a bone after binding still
+// deforms the mesh correctly because we use bindMode='detached'.
+const __boneOriginals = new Map();    // bone → THREE.Vector3 of original local position
+let __selectedBone = null;
+
+function snapshotAllBones(bones) {
+  __boneOriginals.clear();
+  for (const b of bones) __boneOriginals.set(b, b.position.clone());
+}
+
+function refreshBoneList(bones) {
+  const sel = document.getElementById('bone-select');
+  sel.innerHTML = '';
+  if (!bones || !bones.length) {
+    sel.innerHTML = '<option value="">— 先点自动绑骨 —</option>';
+    return;
+  }
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '— 选骨骼 —';
+  sel.appendChild(blank);
+  // Group: pairs L/R together, root/spine on top
+  const order = ['Root','Hip','Spine','Neck','Head',
+                 'Shoulder_L','UpperArm_L','LowerArm_L',
+                 'Shoulder_R','UpperArm_R','LowerArm_R',
+                 'UpperLeg_L','LowerLeg_L','Foot_L',
+                 'UpperLeg_R','LowerLeg_R','Foot_R'];
+  const byName = new Map(bones.map(b => [b.name, b]));
+  for (const name of order) {
+    const b = byName.get(name);
+    if (!b) continue;
+    const opt = document.createElement('option');
+    opt.value = b.uuid;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById('bone-select').addEventListener('change', e => {
+  const uuid = e.target.value;
+  if (!uuid) {
+    __selectedBone = null;
+    document.getElementById('bone-controls').style.display = 'none';
+    return;
+  }
+  let bone = null;
+  scene.traverse(o => { if (!bone && o.isBone && o.uuid === uuid) bone = o; });
+  __selectedBone = bone;
+  if (!bone) return;
+  document.getElementById('bone-controls').style.display = 'block';
+
+  const orig = __boneOriginals.get(bone);
+  const dx = bone.position.x - orig.x;
+  const dy = bone.position.y - orig.y;
+  const dz = bone.position.z - orig.z;
+  const set = (id, valId, v) => {
+    document.getElementById(id).value = v;
+    document.getElementById(valId).textContent = v.toFixed(3);
+  };
+  set('bone-x', 'bone-x-val', dx);
+  set('bone-y', 'bone-y-val', dy);
+  set('bone-z', 'bone-z-val', dz);
+});
+
+function applyBoneTransform() {
+  if (!__selectedBone) return;
+  const orig = __boneOriginals.get(__selectedBone);
+  if (!orig) return;
+  const dx = parseFloat(document.getElementById('bone-x').value);
+  const dy = parseFloat(document.getElementById('bone-y').value);
+  const dz = parseFloat(document.getElementById('bone-z').value);
+  document.getElementById('bone-x-val').textContent = dx.toFixed(3);
+  document.getElementById('bone-y-val').textContent = dy.toFixed(3);
+  document.getElementById('bone-z-val').textContent = dz.toFixed(3);
+  __selectedBone.position.set(orig.x + dx, orig.y + dy, orig.z + dz);
+
+  // Mirror to opposite side. The bones share a parent (same Spine or Hip), so
+  // mirroring across the body's central plane just means flipping the X delta.
+  if (document.getElementById('bone-mirror').checked) {
+    const name = __selectedBone.name;
+    let mirrorName = null;
+    if      (name.endsWith('_L')) mirrorName = name.slice(0, -2) + '_R';
+    else if (name.endsWith('_R')) mirrorName = name.slice(0, -2) + '_L';
+    if (mirrorName) {
+      let mirror = null;
+      scene.traverse(o => { if (!mirror && o.isBone && o.name === mirrorName) mirror = o; });
+      if (mirror) {
+        const morig = __boneOriginals.get(mirror);
+        if (morig) mirror.position.set(morig.x - dx, morig.y + dy, morig.z + dz);
+      }
+    }
+  }
+}
+['bone-x', 'bone-y', 'bone-z'].forEach(id => {
+  document.getElementById(id).addEventListener('input', applyBoneTransform);
+});
+
+document.getElementById('bone-reset').addEventListener('click', () => {
+  if (!__selectedBone) return;
+  const orig = __boneOriginals.get(__selectedBone);
+  __selectedBone.position.copy(orig);
+  if (document.getElementById('bone-mirror').checked) {
+    const name = __selectedBone.name;
+    let mirrorName = null;
+    if      (name.endsWith('_L')) mirrorName = name.slice(0, -2) + '_R';
+    else if (name.endsWith('_R')) mirrorName = name.slice(0, -2) + '_L';
+    if (mirrorName) {
+      let mirror = null;
+      scene.traverse(o => { if (!mirror && o.isBone && o.name === mirrorName) mirror = o; });
+      if (mirror) {
+        const morig = __boneOriginals.get(mirror);
+        if (morig) mirror.position.copy(morig);
+      }
+    }
+  }
+  const set = (id, valId) => { document.getElementById(id).value = 0; document.getElementById(valId).textContent = '0.000'; };
+  set('bone-x', 'bone-x-val');
+  set('bone-y', 'bone-y-val');
+  set('bone-z', 'bone-z-val');
+});
+
+document.getElementById('bone-reset-all').addEventListener('click', () => {
+  for (const [bone, orig] of __boneOriginals) bone.position.copy(orig);
+  const set = (id, valId) => { document.getElementById(id).value = 0; document.getElementById(valId).textContent = '0.000'; };
+  set('bone-x', 'bone-x-val');
+  set('bone-y', 'bone-y-val');
+  set('bone-z', 'bone-z-val');
+});
+
+function convertMeshToSkinned(mesh, skeleton, opts) {
+  const { isMainBody, IDX, boneYs, yFootW, yKneeW, yHipW, yChestW, yNeckW, yHeadW, wcx, wsize } = opts;
+  const geom = mesh.geometry;
+  const positions = geom.attributes.position;
+  const count = positions.count;
+
+  mesh.updateMatrixWorld(true);
+  const M = mesh.matrixWorld.clone();
+
+  const skinIndices = new Uint16Array(count * 4);
+  const skinWeights = new Float32Array(count * 4);
+  const v = new THREE.Vector3();
+
+  if (isMainBody) {
+    // Body shell — Y-banded skinning over the spine + leg chain.
+    // Arm bones (Shoulder/UpperArm/LowerArm) DON'T influence the body shell —
+    // arms are separate capsule meshes (see graftArms) bound directly to UpperArm.
+    for (let i = 0; i < count; i++) {
+      v.fromBufferAttribute(positions, i).applyMatrix4(M);
+      const w = new Array(skeleton.bones.length).fill(0);
+      const y = v.y;
+      const x = v.x - wcx;
+
+      // L/R selectivity with a CENTER DEAD ZONE: vertices near the body's
+      // central X axis (the "crotch" between legs) stay bound to Hip instead
+      // of being split 50/50 between left/right leg. This prevents the
+      // tearing at the leg root when one leg goes forward and the other back.
+      const xNorm = x / (wsize.x * 0.5);          // -1 left … +1 right
+      const xAbs = Math.abs(xNorm);
+      const DEAD = 0.25;                           // |xNorm| < 0.25 → 100% hip
+      const sideMag = Math.max(0, (xAbs - DEAD) / (1 - DEAD));   // 0 in dead zone → 1 at side
+      const sideSign = xNorm < 0 ? -1 : 1;         // which leg side this vertex belongs to
+
+      if (y >= yHeadW) {
+        w[IDX.HEAD] = 1;
+      } else if (y >= yNeckW) {
+        const t = (y - yNeckW) / (yHeadW - yNeckW);
+        w[IDX.HEAD] = t;
+        w[IDX.NECK] = 1 - t;
+      } else if (y >= yChestW) {
+        const t = (y - yChestW) / (yNeckW - yChestW);
+        w[IDX.NECK]  = t;
+        w[IDX.SPINE] = 1 - t;
+      } else if (y >= yHipW) {
+        const t = (y - yHipW) / (yChestW - yHipW);
+        w[IDX.SPINE] = t;
+        w[IDX.HIP]   = 1 - t;
+      } else if (y >= yKneeW) {
+        // Y blend: Hip ↔ UpperLeg
+        const tY = (y - yKneeW) / (yHipW - yKneeW);  // 0 at knee, 1 at hip
+        // Center vertices (sideMag near 0) stay glued to Hip even at knee level
+        // → no tearing in the crotch when legs swing oppositely.
+        w[IDX.HIP] = tY + (1 - tY) * (1 - sideMag);
+        const legW = (1 - tY) * sideMag;
+        if (sideSign < 0) w[IDX.UPPER_LEG_L] = legW;
+        else              w[IDX.UPPER_LEG_R] = legW;
+      } else if (y >= yFootW) {
+        // Y blend: UpperLeg ↔ LowerLeg, side-only (no center vertices expected
+        // at this Y on a stub-leg dog, but fall back to Hip for any that exist).
+        const tY = (y - yFootW) / (yKneeW - yFootW);  // 0 at foot, 1 at knee
+        const upper = tY * sideMag;
+        const lower = (1 - tY) * sideMag;
+        const fallback = 1 - sideMag;
+        w[IDX.HIP] = fallback;
+        if (sideSign < 0) {
+          w[IDX.UPPER_LEG_L] = upper;
+          w[IDX.LOWER_LEG_L] = lower;
+        } else {
+          w[IDX.UPPER_LEG_R] = upper;
+          w[IDX.LOWER_LEG_R] = lower;
+        }
+      } else {
+        // Below foot Y — pure foot per side, fallback to Hip for centers.
+        if (sideSign < 0) w[IDX.FOOT_L] = sideMag;
+        else              w[IDX.FOOT_R] = sideMag;
+        w[IDX.HIP] = 1 - sideMag;
+      }
+
+      // Pick top 4 weights (skinning supports 4 bones per vertex)
+      const sorted = w.map((wt, idx) => [wt, idx]).sort((a, b) => b[0] - a[0]).slice(0, 4);
+      const sum = sorted.reduce((s, [wt]) => s + wt, 0) || 1;
+      for (let j = 0; j < 4; j++) {
+        skinIndices[i * 4 + j] = sorted[j][1];
+        skinWeights[i * 4 + j] = sorted[j][0] / sum;
+      }
+    }
+  } else {
+    // Detail part — rigid 100% bind. Most parts (eyes/ears/nose) bind to the
+    // closest non-arm bone by Y. The two capsule arm meshes (baked into the
+    // model file as TPoseLeftArm / TPoseRightArm) are recognized by name and
+    // bound to UpperArm_L/R so they swing during walk/run.
+    let closest = IDX.HIP;
+    if (mesh.name === 'TPoseLeftArm') {
+      closest = IDX.UPPER_ARM_L;
+    } else if (mesh.name === 'TPoseRightArm') {
+      closest = IDX.UPPER_ARM_R;
+    } else {
+      geom.computeBoundingBox();
+      const localCenter = geom.boundingBox.getCenter(new THREE.Vector3());
+      const worldCenter = localCenter.clone().applyMatrix4(M);
+      const cy = worldCenter.y;
+      let minDist = Infinity;
+      for (let bi = 1; bi < skeleton.bones.length; bi++) {
+        const name = skeleton.bones[bi].name;
+        if (name.startsWith('Shoulder') || name.startsWith('UpperArm') || name.startsWith('LowerArm')) continue;
+        const dist = Math.abs(cy - boneYs[bi]);
+        if (dist < minDist) { minDist = dist; closest = bi; }
+      }
+    }
+    for (let i = 0; i < count; i++) {
+      skinIndices[i * 4] = closest;
+      skinWeights[i * 4] = 1.0;
+    }
+  }
+
+  geom.setAttribute('skinIndex',  new THREE.BufferAttribute(skinIndices, 4));
+  geom.setAttribute('skinWeight', new THREE.BufferAttribute(skinWeights, 4));
+
+  const skinned = new THREE.SkinnedMesh(geom, mesh.material);
+  skinned.position.copy(mesh.position);
+  skinned.rotation.copy(mesh.rotation);
+  skinned.scale.copy(mesh.scale);
+  skinned.castShadow = true;
+  skinned.receiveShadow = true;
+  skinned.name = mesh.name;
+
+  // Re-parent BEFORE binding so matrixWorld reflects the full hierarchy.
+  // SkinnedMesh.bind() with no bindMatrix uses skinned.matrixWorld at call time —
+  // if we bind while the mesh is still detached, the bind matrix is identity and
+  // every detail part snaps to world origin instead of staying with the body.
+  const parent = mesh.parent;
+  parent.add(skinned);
+  parent.remove(mesh);
+  skinned.updateMatrixWorld(true);
+  skinned.bind(skeleton);
+  // Detached bind mode: lets the user translate/scale/rotate the part via
+  // its own .position/.scale/.rotation, instead of the default 'attached'
+  // mode that auto-syncs bindMatrix to matrixWorld every frame and cancels
+  // out manual transforms.
+  skinned.bindMode = 'detached';
+  return skinned;
+}
+
+function createProceduralAnimations() {
+  const TAU = Math.PI * 2;
+  const sin = (t, freq = 1, phase = 0) => Math.sin(t * TAU * freq + phase);
+
+  function quatTrack(name, times, eulers) {
+    const out = [];
+    const q = new THREE.Quaternion();
+    const e = new THREE.Euler();
+    for (const [x, y, z] of eulers) {
+      e.set(x, y, z);
+      q.setFromEuler(e);
+      out.push(q.x, q.y, q.z, q.w);
+    }
+    return new THREE.QuaternionKeyframeTrack(name, times, out);
+  }
+  function vecTrack(name, times, vecs) {
+    const out = [];
+    for (const [x, y, z] of vecs) out.push(x, y, z);
+    return new THREE.VectorKeyframeTrack(name, times, out);
+  }
+  function sampleTimes(dur, n) {
+    const t = [];
+    for (let i = 0; i <= n; i++) t.push((i / n) * dur);
+    return t;
+  }
+
+  const clips = [];
+
+  // --- 待机 / Idle: subtle head + spine sway ---
+  {
+    const dur = 2.5, N = 24;
+    const T = sampleTimes(dur, N);
+    const headRot = [], spineRot = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      headRot.push([sin(t, 1) * 0.04, sin(t, 0.5) * 0.05, 0]);
+      spineRot.push([0, sin(t, 1) * 0.025, sin(t, 0.5) * 0.02]);
+    }
+    clips.push(new THREE.AnimationClip('待机 / Idle', dur, [
+      quatTrack('Head.quaternion',  T, headRot),
+      quatTrack('Spine.quaternion', T, spineRot),
+    ]));
+  }
+
+  // --- 点头 / Bob ---
+  {
+    const dur = 1.0, N = 16;
+    const T = sampleTimes(dur, N);
+    const headRot = [], hipRot = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      headRot.push([sin(t, 1) * 0.18, 0, 0]);
+      hipRot.push([Math.abs(sin(t, 1)) * 0.06, 0, 0]);
+    }
+    clips.push(new THREE.AnimationClip('点头 / Bob', dur, [
+      quatTrack('Head.quaternion', T, headRot),
+      quatTrack('Hip.quaternion',  T, hipRot),
+    ]));
+  }
+
+  // --- 跳舞 / Dance: hip twist + counter-spine + head wag ---
+  {
+    const dur = 2.0, N = 32;
+    const T = sampleTimes(dur, N);
+    const hipRot = [], spineRot = [], headRot = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      hipRot.push([0, sin(t, 1) * 0.25, sin(t, 0.5) * 0.06]);
+      spineRot.push([0, -sin(t, 1) * 0.15, sin(t, 2) * 0.10]);
+      headRot.push([sin(t, 2) * 0.10, sin(t, 1) * 0.20, sin(t, 0.5) * 0.15]);
+    }
+    clips.push(new THREE.AnimationClip('跳舞 / Dance', dur, [
+      quatTrack('Hip.quaternion',   T, hipRot),
+      quatTrack('Spine.quaternion', T, spineRot),
+      quatTrack('Head.quaternion',  T, headRot),
+    ]));
+  }
+
+  // --- 摇头 / Wave (head shake left-right) ---
+  {
+    const dur = 1.4, N = 16;
+    const T = sampleTimes(dur, N);
+    const headRot = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      headRot.push([0, sin(t, 1) * 0.45, 0]);
+    }
+    clips.push(new THREE.AnimationClip('摇头 / Wave', dur, [
+      quatTrack('Head.quaternion', T, headRot),
+    ]));
+  }
+
+  // --- 跳跃 / Jump (squash + leg swing + body lift) ---
+  {
+    const dur = 0.9, N = 24;
+    const T = sampleTimes(dur, N);
+    const hipScale = [], rootPos = [], legLRot = [], legRRot = [], spineRot = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      // Squash curve: compressed → released → airborne stretch → land squash
+      let sy = 1;
+      if (t < 0.15)        sy = 1 - 0.30 * (t / 0.15);                        // anticipation
+      else if (t < 0.35)   sy = 0.70 + 0.50 * ((t - 0.15) / 0.20);            // launch
+      else if (t < 0.65)   sy = 1.20 - 0.10 * Math.sin((t - 0.35) / 0.30 * Math.PI); // float
+      else if (t < 0.85)   sy = 1.20 - 0.50 * ((t - 0.65) / 0.20);            // landing
+      else                 sy = 0.70 + 0.30 * ((t - 0.85) / 0.15);            // recover
+      hipScale.push([1 + (1 - sy) * 0.4, sy, 1 + (1 - sy) * 0.4]);
+
+      // Lift the whole skeleton via Root (whose bind pos is origin, so absolute = offset)
+      const lift = (t > 0.3 && t < 0.7) ? Math.sin((t - 0.3) / 0.4 * Math.PI) * 0.4 : 0;
+      rootPos.push([0, lift, 0]);
+
+      // Leg swing while airborne
+      const legAng = (t > 0.3 && t < 0.7) ? -Math.sin((t - 0.3) / 0.4 * Math.PI) * 0.35 : 0;
+      legLRot.push([legAng, 0, 0]);
+      legRRot.push([legAng, 0, 0]);
+
+      spineRot.push([Math.sin(t * Math.PI) * -0.10, 0, 0]);
+    }
+    clips.push(new THREE.AnimationClip('跳跃 / Jump', dur, [
+      vecTrack('Hip.scale',         T, hipScale),
+      vecTrack('Root.position',     T, rootPos),
+      quatTrack('Spine.quaternion', T, spineRot),
+      quatTrack('UpperLeg_L.quaternion',  T, legLRot),
+      quatTrack('UpperLeg_R.quaternion',  T, legRRot),
+    ]));
+  }
+
+  // --- 走路 / Walk: gait cycle with arm swing + knee bend ---
+  // One full cycle = 1s, two foot strikes (left at 0, right at 0.5).
+  // Arms swing OPPOSITE to same-side leg (natural counter-balance).
+  // Knee bends during the leg's BACK half-cycle (when foot is leaving ground)
+  // to clear the floor on the swing through.
+  {
+    const dur = 1.0, N = 24;
+    const T = sampleTimes(dur, N);
+    const TWO_PI = Math.PI * 2;
+    const LEG_SWING  = 0.55;   // upper-leg fwd/back rotation amplitude (rad)
+    const KNEE_BEND  = 0.70;   // lower-leg bend amplitude (rad)
+    const ARM_SWING  = 0.50;   // upper-arm fwd/back amplitude (rad)
+    const HIP_BOB    = 0.05;   // body Y bob (twice per cycle)
+    const HIP_SWAY   = 0.05;   // hip side roll (rad)
+
+    const ulL=[], ulR=[], llL=[], llR=[], uaL=[], uaR=[];
+    const hipR=[], spineR=[], rootP=[];
+
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const ph = t * TWO_PI;          // 0 → 2π over the cycle
+      const sP = Math.sin(ph);
+      const cP = Math.cos(ph);
+
+      // Legs swing opposite phases. Sign: positive rotation.x = forward kick.
+      ulL.push([ sP * LEG_SWING, 0, 0]);
+      ulR.push([-sP * LEG_SWING, 0, 0]);
+
+      // Knee bend: peaks when leg is at max BACK swing (foot lifting through).
+      // POSITIVE rotation.x on LowerLeg pulls the foot up under the hip
+      // (because the leg points -Y, +X rotation lifts the lower segment back).
+      const bL = Math.max(0, -sP);
+      const bR = Math.max(0,  sP);
+      llL.push([ bL * KNEE_BEND, 0, 0]);
+      llR.push([ bR * KNEE_BEND, 0, 0]);
+
+      // Arms counter-swing: arms rotate around Y axis (forward/back swing
+      // around the shoulder pivot). Same +sP factor on both arms gives the
+      // counter-motion automatically because the arms point in OPPOSITE X
+      // directions — same Y rotation moves them to opposite Z directions.
+      uaL.push([0, sP * ARM_SWING, 0]);
+      uaR.push([0, sP * ARM_SWING, 0]);
+
+      // Hip subtle roll + Y-bob (bobs twice per cycle from foot strikes)
+      hipR.push([0, 0, sP * HIP_SWAY]);
+      spineR.push([0, 0, -sP * HIP_SWAY * 0.5]);   // counter-roll
+      rootP.push([0, Math.abs(Math.sin(ph * 2)) * HIP_BOB * 0.5, 0]);
+    }
+
+    clips.push(new THREE.AnimationClip('走路 / Walk', dur, [
+      quatTrack('UpperLeg_L.quaternion', T, ulL),
+      quatTrack('UpperLeg_R.quaternion', T, ulR),
+      quatTrack('LowerLeg_L.quaternion', T, llL),
+      quatTrack('LowerLeg_R.quaternion', T, llR),
+      quatTrack('UpperArm_L.quaternion', T, uaL),
+      quatTrack('UpperArm_R.quaternion', T, uaR),
+      quatTrack('Hip.quaternion',        T, hipR),
+      quatTrack('Spine.quaternion',      T, spineR),
+      vecTrack ('Root.position',         T, rootP),
+    ]));
+  }
+
+  return clips;
+}
+
+// Wire up the auto-rig button
+document.getElementById('auto-rig').addEventListener('click', autoRig);
+
+// ---------- Clear rig: undo autoRig — convert SkinnedMesh back to Mesh,
+// ---------- remove bones + helper + animations + bone-tuning state.
+function clearRig() {
+  // 1) Stop animation mixer (keep mixer alive but with empty clips)
+  if (currentMixer) currentMixer.stopAllAction();
+  currentClips = [];
+  currentAction = null;
+  currentMixer = null;
+
+  // 2) Remove grafted capsule arms (they're children of UpperArm bones; if we
+  // leave them they'd vanish with the bones below, but explicit cleanup
+  // disposes their geometry properly).
+  ungraftArms();
+
+  // 3) Convert each SkinnedMesh back to a plain Mesh, preserving geometry +
+  // material + transform. The skinIndex/skinWeight attributes are harmless
+  // on a regular Mesh — they're only consulted by the SkinnedMesh shader
+  // path. Re-running autoRig later overwrites them.
+  if (currentModel) {
+    const skinned = [];
+    currentModel.traverse(o => { if (o.isSkinnedMesh) skinned.push(o); });
+    for (const sm of skinned) {
+      const mesh = new THREE.Mesh(sm.geometry, sm.material);
+      mesh.position.copy(sm.position);
+      mesh.rotation.copy(sm.rotation);
+      mesh.scale.copy(sm.scale);
+      mesh.castShadow = sm.castShadow;
+      mesh.receiveShadow = sm.receiveShadow;
+      mesh.name = sm.name;
+      mesh.visible = sm.visible;
+      const parent = sm.parent;
+      parent.add(mesh);
+      parent.remove(sm);
+    }
+  }
+
+  // 4) Remove the root bone (and all its descendants) from the scene
+  const root = scene.getObjectByName('Root');
+  if (root && root.parent) root.parent.remove(root);
+
+  // 5) Remove skeleton helper
+  if (skeletonHelper) { scene.remove(skeletonHelper); skeletonHelper = null; }
+
+  // 6) Clear bone-tuning state + UI
+  __boneOriginals.clear();
+  __selectedBone = null;
+  refreshBoneList([]);
+  document.getElementById('bone-controls').style.display = 'none';
+
+  // 7) Refresh animation dropdown (no clips)
+  populateAnimList();
+
+  // 8) Refresh parts list (no more capsule arms)
+  refreshPartsList();
+
+  // 9) Notice
+  const noticeEl = document.getElementById('notice');
+  noticeEl.innerHTML = '🗑 已清除骨骼 — 模型恢复为普通 mesh,动画清空。可重新点「自动绑骨」。';
+  noticeEl.style.background = 'rgba(150, 150, 150, 0.15)';
+  noticeEl.style.borderColor = 'rgba(150, 150, 150, 0.4)';
+  noticeEl.style.color = '#bbb';
+  noticeEl.classList.add('show');
+
+  console.log('[ClearRig] removed bones + reverted SkinnedMeshes + cleared animations');
+}
+document.getElementById('clear-rig').addEventListener('click', clearRig);
+
+// ---------- T-pose capsule arms ----------
+// Earlier attempts to spatially extract arms from the Pastel Pup mesh produced
+// ragged fragments because Meshy bakes body+arms into one continuous mesh with
+// no separation seams. Pure bbox/range filtering can't carve clean limbs.
+// Replaced with proportional capsule primitives — clean geometry, no holes,
+// posed horizontally (T-pose), color-matched to the body material.
+const graftedArms = [];
+
+async function graftArms() {
+  if (!currentModel) { alert('先加载主模型'); return; }
+  ungraftArms();
+
+  // Sample the body's material so the arms blend in. Strip the basecolor map
+  // because the capsule's UVs don't match the body's UV layout — sampling the
+  // chaotic Meshy basecolor would just paint random pink/cyan patches on the
+  // arms. The body's shader (saturation/brightness/whitening) still runs since
+  // we re-hook below, so a plain white capsule ends up looking exactly like
+  // the body's washed-out off-white.
+  let bodyMat = null;
+  currentModel.traverse(o => { if (!bodyMat && o.isMesh && o.material) bodyMat = o.material; });
+  const armMat = bodyMat
+    ? new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        metalness: 0,
+        roughness: bodyMat.roughness ?? 0.85,
+      })
+    : new THREE.MeshStandardMaterial({ color: 0xffffff });
+  hookMaterial(armMat);
+
+  // Use the current model's world bbox to derive proportions / shoulder anchors
+  const cbb = new THREE.Box3().setFromObject(currentModel);
+  const csize = cbb.max.clone().sub(cbb.min);
+  const bodyWidth = csize.x;
+  // Shoulder Y at chest/upper-torso level (not face level)
+  // Shoulder Y at chest level — DO NOT change without also updating the bone's
+  // yShoulderW in autoRig. The bones adapt to where the arms are placed; the
+  // arms aren't repositioned to where the bones happen to be.
+  const shoulderY      = cbb.min.y + csize.y * 0.50;
+  // Shoulder anchor: 32% inward from each side. The model's bbox includes
+  // floppy ears/legs that extend laterally, so the body's actual chest width
+  // is much narrower than csize.x. 0.32 lands near the torso edge for the
+  // Tripo dog. Tweak per model if needed.
+  const shoulderXLeft  = cbb.min.x + csize.x * 0.32;
+  const shoulderXRight = cbb.max.x - csize.x * 0.32;
+  const shoulderZ      = (cbb.min.z + cbb.max.z) / 2;
+
+  // Smaller capsule — thinner + shorter than before, reads as cartoon stub-arms
+  const armLength = bodyWidth * 0.45;
+  const armRadius = bodyWidth * 0.08;
+  // Capsule built once, cloned per side. Default capsule axis = Y.
+  const capsuleGeom = new THREE.CapsuleGeometry(armRadius, armLength, 12, 24);
+
+  function buildArm(side /* -1=left, +1=right */) {
+    const m = new THREE.Mesh(capsuleGeom.clone(), armMat);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    // Default capsule extends from -armLength/2 to +armLength/2 along Y.
+    // Rotate Z by ±90° → capsule extends along X. Then offset so its inner end
+    // sits at the shoulder.
+    m.rotation.z = Math.PI / 2;
+    const halfLen = armLength / 2 + armRadius; // include hemispherical cap
+    const worldPos = new THREE.Vector3(
+      side < 0 ? shoulderXLeft  - halfLen : shoulderXRight + halfLen,
+      shoulderY,
+      shoulderZ,
+    );
+    m.name = side < 0 ? 'TPoseLeftArm' : 'TPoseRightArm';
+
+    // If model is rigged, parent the capsule to the matching UpperArm bone
+    // so the arm SWINGS independently during walk/run cycles. Falling back to
+    // Spine (when no UpperArm exists) keeps backward compatibility, and to
+    // scene (no rig at all) gives a static rest pose.
+    const armBone = side < 0 ? upperArmL_bone : upperArmR_bone;
+    const parentBone = armBone || spineBone;
+    if (parentBone) {
+      parentBone.updateMatrixWorld(true);
+      const localPos = parentBone.worldToLocal(worldPos.clone());
+      m.position.copy(localPos);
+      parentBone.add(m);
+    } else {
+      m.position.copy(worldPos);
+      scene.add(m);
+    }
+    graftedArms.push(m);
+    return m;
+  }
+
+  // Prefer UpperArm bones (independent swing); fall back to Spine if not rigged
+  const upperArmL_bone = scene.getObjectByName('UpperArm_L');
+  const upperArmR_bone = scene.getObjectByName('UpperArm_R');
+  const spineBone      = scene.getObjectByName('Spine');
+
+  buildArm(-1);
+  buildArm(+1);
+
+  const attachedTo = upperArmL_bone ? 'UpperArm bones' : (spineBone ? 'Spine bone' : 'scene');
+  console.log(`[T-pose] arm length=${armLength.toFixed(3)} radius=${armRadius.toFixed(3)} shoulderY=${shoulderY.toFixed(3)} attached=${attachedTo}`);
+
+  const noticeEl = document.getElementById('notice');
+  noticeEl.innerHTML = upperArmL_bone
+    ? '🦾 已生成 T-pose 胳膊! <b>已绑到 UpperArm 骨</b>,可独立摆臂(走路/跑步)。'
+    : spineBone
+    ? '🦾 已生成 T-pose 胳膊! 已绑到脊柱骨,会跟躯干一起摆动。'
+    : '🦾 已生成 T-pose 胳膊! 但模型还没绑骨,胳膊不会跟动画动。建议:先点"自动绑骨",再生成胳膊。';
+  noticeEl.style.background = 'rgba(100, 150, 255, 0.15)';
+  noticeEl.style.borderColor = 'rgba(100, 150, 255, 0.4)';
+  noticeEl.style.color = '#a0c4ff';
+  noticeEl.classList.add('show');
+}
+
+function ungraftArms() {
+  for (const m of graftedArms) {
+    if (m.parent) m.parent.remove(m);
+    if (m.geometry) m.geometry.dispose();
+  }
+  graftedArms.length = 0;
+}
+
+document.getElementById('graft-arms').addEventListener('click', graftArms);
+document.getElementById('ungraft-arms').addEventListener('click', ungraftArms);
+
+// ---------- Mesh repair: laplacian smoothing of the nose region ----------
+// The Tripo-generated body shell often has spike triangles at the nose hole
+// (fine details that were supposed to be hidden behind the nose mesh). When
+// the nose part is hidden, those spikes show through. We fix it by pulling
+// each spike vertex toward the average of its triangle-neighbors — classic
+// Laplacian smoothing. Runs a few iterations for clean convergence.
+function smoothNoseMesh(opts = {}) {
+  const iterations    = opts.iterations    ?? 2;
+  const radiusMul     = opts.radiusMul     ?? 0.10;
+  const yFrac         = opts.yFrac         ?? 0.65;
+  const zFrontFrac    = opts.zFrontFrac    ?? 0.85;
+  const spikeFactor   = opts.spikeFactor   ?? 0.6;
+  const pullStrength  = opts.pullStrength  ?? 0.5;
+  const triAspectMax  = opts.triAspectMax  ?? 6.0;    // remove triangles whose max_edge/min_edge > this
+
+  // Find the body shell (largest mesh)
+  let target = null, maxVerts = 0;
+  if (currentModel) currentModel.traverse(o => {
+    if (!(o.isMesh || o.isSkinnedMesh)) return;
+    const v = o.geometry?.attributes?.position?.count ?? 0;
+    if (v > maxVerts) { maxVerts = v; target = o; }
+  });
+  if (!target) { alert('找不到主体网格'); return; }
+
+  const geom = target.geometry;
+  const positions = geom.attributes.position;
+  const index = geom.index;
+  if (!index) { alert('暂不支持非索引几何'); return; }
+
+  const cbb = new THREE.Box3().setFromObject(currentModel);
+  const csize = cbb.max.clone().sub(cbb.min);
+  const noseWorld = new THREE.Vector3(
+    (cbb.min.x + cbb.max.x) / 2,
+     cbb.min.y + csize.y * yFrac,
+     cbb.max.z * zFrontFrac,
+  );
+  const repairRadius = csize.x * radiusMul;
+
+  target.updateMatrixWorld(true);
+  const M = target.matrixWorld;
+
+  // ---- PASS 1: drop triangles in the nose region with extreme aspect ratios.
+  // Tripo's broken nose mesh is a star of long thin triangles — those have
+  // huge max-edge / min-edge ratios. Removing them deletes the jagged blob
+  // and leaves a clean hole the smoothing pass can pull shut.
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const triCount0 = index.count / 3;
+  const newIndices = [];
+  let removedTris = 0;
+  for (let t = 0; t < triCount0; t++) {
+    const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
+    va.fromBufferAttribute(positions, ia).applyMatrix4(M);
+    vb.fromBufferAttribute(positions, ib).applyMatrix4(M);
+    vc.fromBufferAttribute(positions, ic).applyMatrix4(M);
+    const cx = (va.x + vb.x + vc.x) / 3;
+    const cy = (va.y + vb.y + vc.y) / 3;
+    const cz = (va.z + vb.z + vc.z) / 3;
+    const dToNose = Math.hypot(cx - noseWorld.x, cy - noseWorld.y, cz - noseWorld.z);
+    if (dToNose > repairRadius) { newIndices.push(ia, ib, ic); continue; }
+    const ab = va.distanceTo(vb), bc = vb.distanceTo(vc), ca = vc.distanceTo(va);
+    const maxS = Math.max(ab, bc, ca), minS = Math.max(Math.min(ab, bc, ca), 1e-6);
+    if (maxS / minS > triAspectMax) { removedTris++; continue; }
+    newIndices.push(ia, ib, ic);
+  }
+  if (removedTris > 0) geom.setIndex(newIndices);
+
+  // ---- PASS 2: selective Laplacian smoothing on remaining nose-region verts.
+  // Rebuild neighbor map from the (possibly trimmed) index buffer.
+  const idx = geom.index;
+  const neighbors = new Map();
+  const triCount = idx.count / 3;
+  for (let t = 0; t < triCount; t++) {
+    const ia = idx.getX(t * 3), ib = idx.getX(t * 3 + 1), ic = idx.getX(t * 3 + 2);
+    if (!neighbors.has(ia)) neighbors.set(ia, new Set());
+    if (!neighbors.has(ib)) neighbors.set(ib, new Set());
+    if (!neighbors.has(ic)) neighbors.set(ic, new Set());
+    neighbors.get(ia).add(ib); neighbors.get(ia).add(ic);
+    neighbors.get(ib).add(ia); neighbors.get(ib).add(ic);
+    neighbors.get(ic).add(ia); neighbors.get(ic).add(ib);
+  }
+
+  const inRegion = new Uint8Array(positions.count);
+  const tmp = new THREE.Vector3();
+  let regionCount = 0;
+  for (let i = 0; i < positions.count; i++) {
+    tmp.fromBufferAttribute(positions, i).applyMatrix4(M);
+    if (tmp.distanceTo(noseWorld) <= repairRadius) {
+      inRegion[i] = 1;
+      regionCount++;
+    }
+  }
+
+  let buf = new Float32Array(positions.array);
+  let smoothedTotal = 0;
+  for (let it = 0; it < iterations; it++) {
+    const out = new Float32Array(buf);
+    const av = new THREE.Vector3();
+    for (let i = 0; i < positions.count; i++) {
+      if (!inRegion[i]) continue;
+      const nbrs = neighbors.get(i);
+      if (!nbrs || nbrs.size < 3) continue;
+      av.set(0, 0, 0);
+      let edgeSum = 0;
+      const vx = buf[i * 3], vy = buf[i * 3 + 1], vz = buf[i * 3 + 2];
+      for (const ni of nbrs) {
+        const nx = buf[ni * 3], ny = buf[ni * 3 + 1], nz = buf[ni * 3 + 2];
+        av.x += nx; av.y += ny; av.z += nz;
+        edgeSum += Math.hypot(vx - nx, vy - ny, vz - nz);
+      }
+      av.divideScalar(nbrs.size);
+      const edgeAvg = edgeSum / nbrs.size;
+      const distToAvg = Math.hypot(vx - av.x, vy - av.y, vz - av.z);
+      if (distToAvg < edgeAvg * spikeFactor) continue;
+      out[i * 3]     = vx + (av.x - vx) * pullStrength;
+      out[i * 3 + 1] = vy + (av.y - vy) * pullStrength;
+      out[i * 3 + 2] = vz + (av.z - vz) * pullStrength;
+      smoothedTotal++;
+    }
+    buf = out;
+  }
+  positions.array.set(buf);
+  positions.needsUpdate = true;
+  geom.computeVertexNormals();
+
+  if (selectedPart === target && __selectionHelper) __selectionHelper.update();
+
+  console.log(`[Repair] "${target.name}" — removed ${removedTris} spike triangles + selectively smoothed ${smoothedTotal}/${regionCount} verts (radius=${repairRadius.toFixed(3)})`);
+}
+document.getElementById('smooth-nose-mesh').addEventListener('click', () => smoothNoseMesh());
+
+// ---------- Mesh repair: add a black sphere patch at the nose position ----------
+function addNosePatch() {
+  if (!currentModel) { alert('先加载模型'); return; }
+  const cbb = new THREE.Box3().setFromObject(currentModel);
+  const csize = cbb.max.clone().sub(cbb.min);
+  const noseWorld = new THREE.Vector3(
+    (cbb.min.x + cbb.max.x) / 2,
+     cbb.min.y + csize.y * 0.65,
+     cbb.max.z * 0.85,
+  );
+  const radius = csize.x * 0.10;
+  const geom = new THREE.SphereGeometry(radius, 24, 16);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x000000, metalness: 0, roughness: 0.9 });
+  hookMaterial(mat);
+  const patch = new THREE.Mesh(geom, mat);
+  patch.castShadow = true;
+  patch.receiveShadow = true;
+  patch.name = `NosePatch_${graftedArms.filter(a => a.name?.startsWith('NosePatch')).length + 1}`;
+
+  const headBone = scene.getObjectByName('Head');
+  if (headBone) {
+    headBone.updateMatrixWorld(true);
+    patch.position.copy(headBone.worldToLocal(noseWorld.clone()));
+    headBone.add(patch);
+  } else {
+    patch.position.copy(noseWorld);
+    scene.add(patch);
+  }
+  graftedArms.push(patch);
+  refreshPartsList();
+  selectPartForTuning(patch);
+  console.log(`[Patch] added ${patch.name} at world ${noseWorld.toArray().map(v=>v.toFixed(2))}`);
+}
+document.getElementById('add-nose-patch').addEventListener('click', addNosePatch);
+
+// ---------- Parts visibility + per-part transform tuning ----------
+// Lists every Mesh / SkinnedMesh under currentModel as a checkbox so the user
+// can toggle individual segments — useful for hiding the body's natural arm
+// stumps (paired Mesh_6 / Mesh_7 type parts) before grafting capsule arms.
+// Clicking the name selects the part for sliders below.
+const partOriginals = new WeakMap();   // mesh -> { origLocalPos, origScale, origRotY, origWorldPos }
+let selectedPart = null;
+
+function getAllAdjustableParts() {
+  const parts = [];
+  if (currentModel) {
+    currentModel.traverse(o => {
+      if (o.isMesh || o.isSkinnedMesh) parts.push(o);
+    });
+  }
+  // Include grafted capsule arms (children of Spine bone or scene)
+  for (const a of graftedArms) parts.push(a);
+  parts.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return parts;
+}
+
+function snapshotPart(p) {
+  if (partOriginals.has(p)) return;
+  p.parent?.updateMatrixWorld(true);
+  const origWorld = new THREE.Vector3();
+  p.getWorldPosition(origWorld);
+  partOriginals.set(p, {
+    origLocalPos: p.position.clone(),
+    origScale:    p.scale.clone(),
+    origRotY:     p.rotation.y,
+    origWorldPos: origWorld,
+  });
+}
+
+function refreshPartsList() {
+  const list = document.getElementById('parts-list');
+  list.innerHTML = '';
+  const parts = getAllAdjustableParts();
+  if (parts.length === 0) {
+    list.innerHTML = '<div style="color:#888;font-size:11px;">未加载模型</div>';
+    return;
+  }
+  for (const p of parts) {
+    snapshotPart(p);
+    const verts = p.geometry?.attributes?.position?.count ?? 0;
+    const row = document.createElement('div');
+    row.className = 'checkbox-row';
+    row.style.cssText = 'font-size:11px; padding:3px 4px; gap:6px; border-radius:3px;';
+    row.dataset.partUuid = p.uuid;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = p.visible;
+    cb.addEventListener('change', () => { p.visible = cb.checked; });
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = p.name || '(unnamed)';
+    nameSpan.style.cssText = 'font-family:ui-monospace,Menlo,monospace; flex:1; cursor:pointer;';
+    nameSpan.addEventListener('click', () => selectPartForTuning(p));
+
+    const vertSpan = document.createElement('span');
+    vertSpan.textContent = `${verts.toLocaleString()}v`;
+    vertSpan.style.cssText = 'color:#666; margin-left:auto; font-size:10px;';
+
+    row.append(cb, nameSpan, vertSpan);
+    list.appendChild(row);
+  }
+}
+
+function selectPartForTuning(p) {
+  selectedPart = p;
+  document.getElementById('part-controls').style.display = 'block';
+  document.getElementById('part-selected-name').textContent = p.name || '(unnamed)';
+
+  // Highlight selected row
+  document.querySelectorAll('#parts-list > div').forEach(r => {
+    r.style.background = r.dataset.partUuid === p.uuid ? '#1e3a5f' : '';
+  });
+
+  // Compute current offsets relative to original
+  const orig = partOriginals.get(p);
+  const curWorld = new THREE.Vector3();
+  p.getWorldPosition(curWorld);
+  const dx = curWorld.x - orig.origWorldPos.x;
+  const dy = curWorld.y - orig.origWorldPos.y;
+  const dz = curWorld.z - orig.origWorldPos.z;
+  const sc = p.scale.x / orig.origScale.x;
+  const ry = p.rotation.y - orig.origRotY;
+
+  function set(id, valId, v) {
+    document.getElementById(id).value = v;
+    document.getElementById(valId).textContent = v.toFixed(2);
+  }
+  set('part-x',     'part-x-val',     dx);
+  set('part-y',     'part-y-val',     dy);
+  set('part-z',     'part-z-val',     dz);
+  set('part-scale', 'part-scale-val', sc);
+  set('part-roty',  'part-roty-val',  ry);
+
+  // Sync the color picker UI with the part's current color state
+  const cs = __partColorState.get(p);
+  const modeSel = document.getElementById('part-color-mode');
+  if (cs) {
+    modeSel.value = cs.mode;
+    document.getElementById('part-color').value = cs.top;
+    document.getElementById('part-color-bottom').value = cs.bottom;
+  } else {
+    modeSel.value = 'solid';
+    const m = Array.isArray(p.material) ? p.material[0] : p.material;
+    if (m?.color) {
+      const c = m.color;
+      const hex = '#' + [c.r, c.g, c.b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+      document.getElementById('part-color').value = hex;
+    }
+  }
+  document.getElementById('part-color-bottom-row').style.display =
+    modeSel.value === 'gradient' ? 'flex' : 'none';
+
+  // Show a cyan bbox around the selected part so the user can see WHICH
+  // part this is (no more clicking blindly through `tripo_part_X`)
+  highlightSelectedPart(p);
+}
+
+let __selectionHelper = null;
+function highlightSelectedPart(part) {
+  if (__selectionHelper) {
+    scene.remove(__selectionHelper);
+    __selectionHelper = null;
+  }
+  if (!part) return;
+  __selectionHelper = new THREE.BoxHelper(part, 0x00ffff);
+  __selectionHelper.material.depthTest = false;     // always on top
+  __selectionHelper.material.transparent = true;
+  __selectionHelper.material.linewidth = 3;         // most browsers cap at 1px but try
+  __selectionHelper.renderOrder = 999;
+  __selectionHelper.update();                        // compute bbox now (else may be zero-sized)
+  scene.add(__selectionHelper);
+}
+
+function applySelectedPartTransform() {
+  if (!selectedPart) return;
+  const orig = partOriginals.get(selectedPart);
+  if (!orig) return;
+  const dx = parseFloat(document.getElementById('part-x').value);
+  const dy = parseFloat(document.getElementById('part-y').value);
+  const dz = parseFloat(document.getElementById('part-z').value);
+  const sc = parseFloat(document.getElementById('part-scale').value);
+  const ry = parseFloat(document.getElementById('part-roty').value);
+  document.getElementById('part-x-val').textContent = dx.toFixed(2);
+  document.getElementById('part-y-val').textContent = dy.toFixed(2);
+  document.getElementById('part-z-val').textContent = dz.toFixed(2);
+  document.getElementById('part-scale-val').textContent = sc.toFixed(2);
+  document.getElementById('part-roty-val').textContent = ry.toFixed(2);
+
+  // Compute desired world position = origWorld + (dx,dy,dz)
+  // Then convert to parent-local for assignment.
+  const desiredWorld = orig.origWorldPos.clone().add(new THREE.Vector3(dx, dy, dz));
+  if (selectedPart.parent) {
+    selectedPart.parent.updateMatrixWorld(true);
+    const desiredLocal = selectedPart.parent.worldToLocal(desiredWorld.clone());
+    selectedPart.position.copy(desiredLocal);
+  } else {
+    selectedPart.position.copy(desiredWorld);
+  }
+  selectedPart.scale.copy(orig.origScale).multiplyScalar(sc);
+  selectedPart.rotation.y = orig.origRotY + ry;
+}
+
+// Wire up sliders
+['part-x', 'part-y', 'part-z', 'part-scale', 'part-roty'].forEach(id => {
+  document.getElementById(id).addEventListener('input', applySelectedPartTransform);
+});
+document.getElementById('part-reset').addEventListener('click', () => {
+  if (!selectedPart) return;
+  const orig = partOriginals.get(selectedPart);
+  selectedPart.position.copy(orig.origLocalPos);
+  selectedPart.scale.copy(orig.origScale);
+  selectedPart.rotation.y = orig.origRotY;
+  selectPartForTuning(selectedPart);  // reset slider UI
+});
+
+// Per-part color override. Solid color = fresh MeshStandardMaterial w/ no map.
+// Gradient = same material but with vertexColors enabled and per-vertex colors
+// interpolating from bottom Y → top Y between two stops.
+const __origColorMaterials = new WeakMap();
+const __partColorState = new WeakMap();   // part -> {mode, top, bottom}
+
+function applyPartColor(part, mode, topHex, bottomHex) {
+  if (!__origColorMaterials.has(part)) {
+    __origColorMaterials.set(part, part.material);
+  }
+  const refMat = Array.isArray(part.material) ? part.material[0] : part.material;
+  const baseRoughness = refMat?.roughness ?? 0.85;
+
+  if (mode === 'gradient') {
+    // Set per-vertex colors based on Y position (mesh local space)
+    const geom = part.geometry;
+    const positions = geom.attributes.position;
+    geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    const yMin = bb.min.y, yMax = bb.max.y, yRange = yMax - yMin;
+    const top = new THREE.Color(topHex), bot = new THREE.Color(bottomHex);
+    const colors = new Float32Array(positions.count * 3);
+    for (let i = 0; i < positions.count; i++) {
+      const t = yRange > 1e-9 ? (positions.getY(i) - yMin) / yRange : 0.5;
+      colors[i * 3]     = bot.r * (1 - t) + top.r * t;
+      colors[i * 3 + 1] = bot.g * (1 - t) + top.g * t;
+      colors[i * 3 + 2] = bot.b * (1 - t) + top.b * t;
+    }
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true, color: 0xffffff, metalness: 0, roughness: baseRoughness,
+    });
+    hookMaterial(mat);
+    part.material = mat;
+  } else {
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(topHex), metalness: 0, roughness: baseRoughness,
+    });
+    hookMaterial(mat);
+    part.material = mat;
+  }
+  __partColorState.set(part, { mode, top: topHex, bottom: bottomHex });
+}
+
+document.getElementById('part-color-mode').addEventListener('change', e => {
+  document.getElementById('part-color-bottom-row').style.display = e.target.value === 'gradient' ? 'flex' : 'none';
+  if (!selectedPart) return;
+  const top = document.getElementById('part-color').value;
+  const bottom = document.getElementById('part-color-bottom').value;
+  applyPartColor(selectedPart, e.target.value, top, bottom);
+});
+document.getElementById('part-color').addEventListener('input', () => {
+  if (!selectedPart) return;
+  const mode = document.getElementById('part-color-mode').value;
+  const top = document.getElementById('part-color').value;
+  const bottom = document.getElementById('part-color-bottom').value;
+  applyPartColor(selectedPart, mode, top, bottom);
+});
+document.getElementById('part-color-bottom').addEventListener('input', () => {
+  if (!selectedPart) return;
+  const mode = document.getElementById('part-color-mode').value;
+  if (mode !== 'gradient') return;
+  const top = document.getElementById('part-color').value;
+  const bottom = document.getElementById('part-color-bottom').value;
+  applyPartColor(selectedPart, mode, top, bottom);
+});
+document.getElementById('part-color-clear').addEventListener('click', () => {
+  if (!selectedPart) return;
+  const orig = __origColorMaterials.get(selectedPart);
+  if (!orig) return;
+  selectedPart.material = orig;
+  __origColorMaterials.delete(selectedPart);
+  selectPartForTuning(selectedPart);
+});
+
+// Mirror current part's adjustments to its Left↔Right counterpart
+document.getElementById('part-mirror').addEventListener('click', () => {
+  if (!selectedPart) { alert('先选中一个部件'); return; }
+  const name = selectedPart.name || '';
+  let mirrorName = null;
+  if (name.includes('Left'))       mirrorName = name.replace('Left',  'Right');
+  else if (name.includes('Right')) mirrorName = name.replace('Right', 'Left');
+  else if (name.endsWith('_L'))    mirrorName = name.replace(/_L$/,   '_R');
+  else if (name.endsWith('_R'))    mirrorName = name.replace(/_R$/,   '_L');
+  if (!mirrorName) {
+    alert(`部件名 "${name}" 里没有 Left/Right 标记,无法识别对侧分身`);
+    return;
+  }
+  const partner = getAllAdjustableParts().find(p => p.name === mirrorName);
+  if (!partner) { alert(`找不到对侧部件: ${mirrorName}`); return; }
+
+  snapshotPart(partner);
+  const selOrig = partOriginals.get(selectedPart);
+  const partnerOrig = partOriginals.get(partner);
+
+  // Read current world-space deltas of selected part
+  const selWorld = new THREE.Vector3();
+  selectedPart.getWorldPosition(selWorld);
+  const dx = selWorld.x - selOrig.origWorldPos.x;
+  const dy = selWorld.y - selOrig.origWorldPos.y;
+  const dz = selWorld.z - selOrig.origWorldPos.z;
+  const sc = selectedPart.scale.x / selOrig.origScale.x;
+  const ry = selectedPart.rotation.y - selOrig.origRotY;
+
+  // Mirror: flip X delta + Y rotation; keep Y/Z/scale
+  const desiredWorld = partnerOrig.origWorldPos.clone()
+    .add(new THREE.Vector3(-dx, dy, dz));
+  if (partner.parent) {
+    partner.parent.updateMatrixWorld(true);
+    partner.position.copy(partner.parent.worldToLocal(desiredWorld.clone()));
+  } else {
+    partner.position.copy(desiredWorld);
+  }
+  partner.scale.copy(partnerOrig.origScale).multiplyScalar(sc);
+  partner.rotation.y = partnerOrig.origRotY - ry;
+
+  console.log(`[Mirror] ${name} → ${mirrorName}: dx=${(-dx).toFixed(2)} dy=${dy.toFixed(2)} dz=${dz.toFixed(2)} sc=${sc.toFixed(2)} ry=${(-ry).toFixed(2)}`);
+});
+
+// Material clipboard — copy from one part, paste to another. Useful for making
+// the capsule arms inherit the body's textured material (so subtle texture
+// tints/colors carry over automatically).
+let materialClipboard = null;
+let materialClipboardSourceName = '';
+document.getElementById('part-copy-mat').addEventListener('click', () => {
+  if (!selectedPart) { alert('先选中一个部件'); return; }
+  const m = Array.isArray(selectedPart.material) ? selectedPart.material[0] : selectedPart.material;
+  if (!m) { alert('选中的部件没有材质'); return; }
+  materialClipboard = m;
+  materialClipboardSourceName = selectedPart.name || '(unnamed)';
+  document.getElementById('part-paste-mat').disabled = false;
+  document.getElementById('part-paste-uvbake').disabled = false;
+  document.getElementById('part-paste-avg').disabled = false;
+  document.getElementById('mat-clipboard-info').textContent = `📋 已复制: ${materialClipboardSourceName} 的材质`;
+});
+document.getElementById('part-paste-mat').addEventListener('click', () => {
+  if (!selectedPart) { alert('先选中要粘贴的部件'); return; }
+  if (!materialClipboard) { alert('剪贴板为空,先复制一个材质'); return; }
+  // Share the material reference — saturation/brightness/whiten sliders
+  // and any future tweaks to the source material will propagate to the target.
+  selectedPart.material = materialClipboard;
+  console.log(`[Material] ${materialClipboardSourceName} → ${selectedPart.name}`);
+  document.getElementById('mat-clipboard-info').textContent =
+    `📋 已粘贴 ${materialClipboardSourceName} 的材质 → ${selectedPart.name}`;
+});
+
+// Replace target's UVs with a single point matching source's avg UV.
+// Combined with sharing source's material, this makes the target sample
+// the same texel as the source's average — body texture renders cleanly
+// on capsules without UV-mismatch patches, AND material tweaks (saturation
+// sliders etc.) propagate from body to arms automatically.
+function bakeUVsToSourceAverage(targetMesh, sourcePart) {
+  const sourceUV = sourcePart.geometry?.attributes?.uv;
+  if (!sourceUV) return false;
+  let avgU = 0, avgV = 0;
+  for (let i = 0; i < sourceUV.count; i++) {
+    avgU += sourceUV.getX(i);
+    avgV += sourceUV.getY(i);
+  }
+  avgU /= sourceUV.count;
+  avgV /= sourceUV.count;
+
+  const tg = targetMesh.geometry;
+  let tu = tg.attributes.uv;
+  if (!tu) {
+    tu = new THREE.BufferAttribute(new Float32Array(tg.attributes.position.count * 2), 2);
+    tg.setAttribute('uv', tu);
+  }
+  for (let i = 0; i < tu.count; i++) tu.setXY(i, avgU, avgV);
+  tu.needsUpdate = true;
+  return true;
+}
+
+function transferUVBakedMaterial(sourcePart, targetMesh) {
+  if (!sourcePart || !targetMesh) return;
+  bakeUVsToSourceAverage(targetMesh, sourcePart);
+  const m = Array.isArray(sourcePart.material) ? sourcePart.material[0] : sourcePart.material;
+  targetMesh.material = m;
+}
+
+document.getElementById('part-paste-uvbake').addEventListener('click', () => {
+  if (!selectedPart) { alert('先选中要粘贴的部件'); return; }
+  if (!materialClipboard) { alert('剪贴板为空,先复制一个材质'); return; }
+  let source = null;
+  if (currentModel) currentModel.traverse(o => {
+    if (!source && (o.isMesh || o.isSkinnedMesh) && o.name === materialClipboardSourceName) source = o;
+  });
+  if (!source) for (const a of graftedArms) if (a.name === materialClipboardSourceName) { source = a; break; }
+  if (!source) { alert(`找不到源部件 ${materialClipboardSourceName}`); return; }
+  transferUVBakedMaterial(source, selectedPart);
+  console.log(`[UVBake] ${materialClipboardSourceName} → ${selectedPart.name}`);
+  document.getElementById('mat-clipboard-info').textContent =
+    `🔗 已 UV 烘焙 ${materialClipboardSourceName} 的贴图 → ${selectedPart.name}`;
+});
+
+// Sample the average color of a part's basecolor texture restricted to that
+// part's UV coverage. Returns a THREE.Color or null if the part has no
+// textured material. This avoids the "pink blob" artifact you get when sharing
+// a UV-specific basecolor texture across meshes with mismatched UVs — the
+// capsule gets a uniform tint that matches the source part's average look.
+function sampleAverageColorFromPart(part) {
+  const mat = Array.isArray(part.material) ? part.material[0] : part.material;
+  const tex = mat?.map;
+  if (!tex || !tex.image) return null;
+  const uv = part.geometry?.attributes?.uv;
+  if (!uv) return null;
+
+  const img = tex.image;
+  const W = img.width || img.naturalWidth || 0;
+  const H = img.height || img.naturalHeight || 0;
+  if (!W || !H) return null;
+
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  let data;
+  try { data = ctx.getImageData(0, 0, W, H).data; }
+  catch (e) { console.warn('[avg-color] getImageData failed (likely cross-origin):', e); return null; }
+
+  // GLTFLoader: flipY=false (UV origin top-left, V increases downward in canvas)
+  // FBXLoader / default: flipY=true (UV origin bottom-left, V flipped)
+  const flip = tex.flipY !== false;
+
+  let r = 0, g = 0, b = 0, n = 0;
+  // Sample at every Nth UV to keep this snappy on big meshes
+  const step = Math.max(1, Math.floor(uv.count / 4096));
+  for (let i = 0; i < uv.count; i += step) {
+    const u = uv.getX(i);
+    const v = uv.getY(i);
+    let px = Math.floor(u * W);
+    let py = Math.floor((flip ? (1 - v) : v) * H);
+    if (px < 0) px = 0; else if (px >= W) px = W - 1;
+    if (py < 0) py = 0; else if (py >= H) py = H - 1;
+    const idx = (py * W + px) * 4;
+    r += data[idx];
+    g += data[idx + 1];
+    b += data[idx + 2];
+    n++;
+  }
+  if (n === 0) return null;
+  return new THREE.Color(r / n / 255, g / n / 255, b / n / 255);
+}
+
+// Build a clean MeshStandardMaterial whose color = avg of source part's
+// textured surface. Hook it for the saturation/brightness/whiten sliders.
+function makeAvgColorMaterial(sourcePart, refMat) {
+  const color = sampleAverageColorFromPart(sourcePart);
+  const m = new THREE.MeshStandardMaterial({
+    color: color ?? new THREE.Color(0xffffff),
+    metalness: 0,
+    roughness: refMat?.roughness ?? 0.85,
+  });
+  hookMaterial(m);
+  return m;
+}
+
+document.getElementById('part-paste-avg').addEventListener('click', () => {
+  if (!selectedPart) { alert('先选中要粘贴的部件'); return; }
+  if (!materialClipboard) { alert('剪贴板为空,先复制一个材质'); return; }
+  // Find the source part by name to get its UVs (we cached only the material
+  // reference in clipboard, but material doesn't carry UV info)
+  let source = null;
+  if (currentModel) currentModel.traverse(o => {
+    if (!source && (o.isMesh || o.isSkinnedMesh) && o.name === materialClipboardSourceName) source = o;
+  });
+  if (!source) for (const a of graftedArms) if (a.name === materialClipboardSourceName) { source = a; break; }
+  if (!source) { alert(`找不到源部件 ${materialClipboardSourceName}(可能已被删除)`); return; }
+
+  const newMat = makeAvgColorMaterial(source, materialClipboard);
+  selectedPart.material = newMat;
+  const c = newMat.color;
+  const hex = '#' + [c.r, c.g, c.b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+  console.log(`[AvgColor] sampled from ${materialClipboardSourceName} → ${selectedPart.name}: ${hex}`);
+  document.getElementById('mat-clipboard-info').textContent =
+    `🎨 已应用 ${materialClipboardSourceName} 的平均色 ${hex} → ${selectedPart.name}`;
+});
+
+document.getElementById('parts-refresh').addEventListener('click', refreshPartsList);
+
+// Auto-refresh whenever a new model finishes loading.
+const __origHandleLoaded = handleLoaded;
+handleLoaded = function patchedHandleLoaded(...args) {
+  __origHandleLoaded.apply(this, args);
+  selectedPart = null;
+  document.getElementById('part-controls').style.display = 'none';
+  requestAnimationFrame(refreshPartsList);
+};
+
+// Also refresh after rigging or grafting arms (those add new parts)
+const __origAutoRig = autoRig;
+autoRig = function patchedAutoRig() {
+  __origAutoRig();
+  requestAnimationFrame(refreshPartsList);
+};
+const __origGraftArms = graftArms;
+graftArms = async function patchedGraftArms() {
+  await __origGraftArms();
+  requestAnimationFrame(refreshPartsList);
+};
+const __origUngraftArms = ungraftArms;
+ungraftArms = function patchedUngraftArms() {
+  __origUngraftArms();
+  requestAnimationFrame(refreshPartsList);
+};
+
+// File inputs
+document.getElementById('file-main').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) {
+    document.getElementById('filename-main').textContent = f.name;
+    loadFile(f);
+  }
+});
+
+document.getElementById('file-anim').addEventListener('change', async e => {
+  for (const f of e.target.files) {
+    await loadAnimationFile(f);
+  }
+});
+
+// Drag & drop
+['dragenter', 'dragover'].forEach(ev => {
+  wrap.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    document.getElementById('drop-overlay').classList.add('show');
+  });
+});
+['dragleave', 'drop'].forEach(ev => {
+  wrap.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    document.getElementById('drop-overlay').classList.remove('show');
+  });
+});
+wrap.addEventListener('drop', e => {
+  const files = e.dataTransfer.files;
+  if (files.length === 0) return;
+  // first drop = main model; subsequent = anim if rig exists
+  if (!currentModel) {
+    document.getElementById('filename-main').textContent = files[0].name;
+    loadFile(files[0]);
+  } else {
+    // load all as animations
+    [...files].forEach(loadAnimationFile);
+  }
+});
+
+// Playback controls
+const playpause = document.getElementById('playpause');
+const scrub = document.getElementById('scrub');
+const timeLabel = document.getElementById('time');
+const speedSelect = document.getElementById('speed-select');
+let isPaused = false;
+playpause.addEventListener('click', () => {
+  if (!currentAction) return;
+  isPaused = !isPaused;
+  currentAction.paused = isPaused;
+  playpause.textContent = isPaused ? '▶' : '❙❙';
+});
+scrub.addEventListener('input', e => {
+  if (!currentAction) return;
+  const t = (parseFloat(e.target.value) / 1000) * currentAction.getClip().duration;
+  currentAction.time = t;
+});
+speedSelect.addEventListener('change', e => {
+  if (currentMixer) currentMixer.timeScale = parseFloat(e.target.value);
+});
+
+// ---------- Export ----------
+document.getElementById('export-png').addEventListener('click', () => {
+  renderer.render(scene, camera);
+  const data = renderer.domElement.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = data;
+  a.download = `frame_${Date.now()}.png`;
+  a.click();
+});
+
+let mediaRecorder = null, chunks = [];
+document.getElementById('export-mp4').addEventListener('click', () => {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  const stream = renderer.domElement.captureStream(60);
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  mediaRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  chunks = [];
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recording_${Date.now()}.webm`;
+    a.click();
+    document.getElementById('export-mp4').textContent = '录制动画 (WebM)';
+  };
+  mediaRecorder.start();
+  document.getElementById('export-mp4').textContent = '⏹ 停止录制';
+});
+
+// ---------- GLB export ----------
+// Bundles the rigged model + skeleton + grafted capsule arms + procedural
+// animation clips into a single .glb file. Custom shader hooks (saturation /
+// brightness / whiten) are NOT exported — they're a runtime overlay only.
+// Bone position offsets ARE exported because they're stored on bone.position.
+document.getElementById('export-glb').addEventListener('click', async () => {
+  if (!currentModel) { alert('没有模型可导出'); return; }
+
+  const btn = document.getElementById('export-glb');
+  const oldLabel = btn.textContent;
+  btn.textContent = '⏳ 导出中...';
+  btn.disabled = true;
+
+  try {
+    // GLTFExporter walks any Object3D you hand it. The cleanest export is to
+    // package everything under one Group: the body shell SkinnedMeshes, the
+    // capsule arms (already children of UpperArm bones), and the bone root.
+    const exportGroup = new THREE.Group();
+    exportGroup.name = 'RiggedModel';
+
+    // Move the live currentModel + skeleton root into our temp group so they
+    // share a clean parent. We restore them after parse() completes.
+    const liveModelParent = currentModel.parent;
+    const liveModelTransformBackup = {
+      position: currentModel.position.clone(),
+      rotation: currentModel.rotation.clone(),
+      scale: currentModel.scale.clone(),
+    };
+    const rootBone = scene.getObjectByName('Root');
+    const liveBoneParent = rootBone?.parent;
+
+    exportGroup.add(currentModel);
+    if (rootBone) exportGroup.add(rootBone);
+    scene.add(exportGroup);
+    exportGroup.updateMatrixWorld(true);
+
+    const exporter = new GLTFExporter();
+    const gltf = await new Promise((resolve, reject) => {
+      exporter.parse(
+        exportGroup,
+        resolve,
+        reject,
+        {
+          binary: true,                    // produce .glb
+          animations: currentClips || [],  // include Walk/Idle/etc.
+          includeCustomExtensions: false,
+        }
+      );
+    });
+
+    // Restore live scene hierarchy
+    if (liveModelParent) liveModelParent.add(currentModel); else scene.add(currentModel);
+    currentModel.position.copy(liveModelTransformBackup.position);
+    currentModel.rotation.copy(liveModelTransformBackup.rotation);
+    currentModel.scale.copy(liveModelTransformBackup.scale);
+    if (rootBone) (liveBoneParent || scene).add(rootBone);
+    scene.remove(exportGroup);
+
+    // Save the .glb as a download
+    const buffer = gltf instanceof ArrayBuffer ? gltf : gltf;
+    const blob = new Blob([buffer], { type: 'model/gltf-binary' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rigged_dog_${Date.now()}.glb`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    const sizeKB = Math.round(blob.size / 1024);
+    btn.textContent = `✓ 已导出 ${sizeKB} KB`;
+    setTimeout(() => { btn.textContent = oldLabel; btn.disabled = false; }, 2500);
+    console.log(`[GLB] exported ${sizeKB} KB, ${currentClips?.length ?? 0} animations`);
+  } catch (e) {
+    console.error('[GLB] export failed:', e);
+    alert('导出失败: ' + (e.message || e));
+    btn.textContent = oldLabel;
+    btn.disabled = false;
+  }
+});
+
+// ---------- Helpers ----------
+function disposeObject(obj) {
+  obj.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      mats.forEach(m => {
+        Object.keys(m).forEach(k => {
+          const v = m[k];
+          if (v && v.isTexture) v.dispose();
+        });
+        m.dispose();
+      });
+    }
+  });
+}
+
+// ---------- Animation loop ----------
+const clock = new THREE.Clock();
+const animFaceTimeline = {
+  '跳跃': [
+    {at: 0.0,  face: '20歪嘴哼'},
+    {at: 0.35, face: '12嘟嘴眨眼'},
+    {at: 0.8,  face: '20歪嘴哼'}
+  ],
+  '打哈欠': [
+    {at: 0.0,  face: '17咀嚼'},
+    {at: 0.05, face: '16嘟嘴困'},
+    {at: 0.95, face: '17咀嚼'}
+  ],
+  'wink': [
+    {at: 0.0,  face: '01微笑'},
+    {at: 0.3,  face: '04眨单眼大笑'},
+    {at: 0.7,  face: '01微笑'}
+  ]
+};
+let lastTimelineFace = null;
+
+// ---------- 自由摆姿势 (Free Pose Editor — 直接拖拽 + 关节限位) ----------
+let poseMode = false;
+let posableBones = {};   // name -> THREE.Bone
+let poseHandles = [];    // [{mesh, bone, name}]
+let poseGizmo = null;    // TransformControls
+let poseSelected = null; // 当前选中的 bone
+const poseRay = new THREE.Raycaster();
+const poseMouse = new THREE.Vector2();
+const _wpos = new THREE.Vector3();
+
+// 暴露给用户的关节(骨骼名 → 中文标签)
+const POSE_BONE_DEFS = [
+  ['Head', '头', 'XYZ'],
+  ['Neck', '脖子', 'XYZ'],
+  ['Spine', '上身', 'XYZ'],
+  ['Chest', '胸', 'XYZ'],
+  ['L_Shoulder', '左肩', 'XYZ'],
+  ['R_Shoulder', '右肩', 'XYZ'],
+  ['L_UpperArm', '左大臂', 'XYZ'],
+  ['R_UpperArm', '右大臂', 'XYZ'],
+  ['L_ForeArm', '左小臂', 'XYZ'],
+  ['R_ForeArm', '右小臂', 'XYZ'],
+  ['L_Thigh', '左大腿', 'XYZ'],
+  ['R_Thigh', '右大腿', 'XYZ'],
+  ['L_Shin', '左小腿', 'XYZ'],
+  ['R_Shin', '右小腿', 'XYZ'],
+  ['L_Ear', '左耳', 'XYZ'],
+  ['R_Ear', '右耳', 'XYZ'],
+  ['Tail1', '尾巴根', 'XYZ'],
+  ['Tail2', '尾巴尖', 'XYZ'],
+];
+const POSE_LABELS = Object.fromEntries(POSE_BONE_DEFS.map(([n, l]) => [n, l]));
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+// 关节旋转限位(相对 rest,单位度)。肘/膝单向铰链防反关节。
+// ⚠️ body_2 是 12 个独立网格块拼的,四肢大幅摆会露出块间缝隙。
+// 四肢限位收到"动画安全区"(21 个动画用到的最大角度),保证分块仍重叠不露缝。
+const POSE_LIMITS = {
+  Head:       { x: [-40, 40],  y: [-70, 70],  z: [-35, 35] },
+  Neck:       { x: [-30, 30],  y: [-35, 35],  z: [-25, 25] },
+  Spine:      { x: [-12, 20],  y: [-15, 15],  z: [-15, 15] },
+  Chest:      { x: [-10, 15],  y: [-15, 15],  z: [-12, 12] },
+  L_Shoulder: { x: [-18, 18],  y: [-18, 18],  z: [-18, 18] },
+  R_Shoulder: { x: [-18, 18],  y: [-18, 18],  z: [-18, 18] },
+  L_UpperArm: { x: [-30, 60],  y: [-30, 30],  z: [-45, 45] },   // 动画安全区
+  R_UpperArm: { x: [-30, 60],  y: [-30, 30],  z: [-45, 45] },
+  L_ForeArm:  { x: [-15, 15],  y: [-15, 15],  z: [-60, 0] },     // 左肘:仅负向(屈肘)
+  R_ForeArm:  { x: [-15, 15],  y: [-15, 15],  z: [0, 60] },      // 右肘:仅正向(屈肘)
+  L_Thigh:    { x: [-42, 42],  y: [-18, 18],  z: [-18, 18] },    // 动画安全区
+  R_Thigh:    { x: [-42, 42],  y: [-18, 18],  z: [-18, 18] },
+  L_Shin:     { x: [0, 55],    y: [-10, 10],  z: [-10, 10] },    // 左膝:仅正向
+  R_Shin:     { x: [0, 55],    y: [-10, 10],  z: [-10, 10] },    // 右膝:仅正向
+  L_Ear:      { x: [-45, 45],  y: [-30, 30],  z: [-45, 45] },
+  R_Ear:      { x: [-45, 45],  y: [-30, 30],  z: [-45, 45] },
+  Tail1:      { x: [-50, 50],  y: [-50, 50],  z: [-50, 50] },
+  Tail2:      { x: [-50, 50],  y: [-50, 50],  z: [-50, 50] },
+};
+
+function gatherPosableBones() {
+  posableBones = {};
+  if (!currentModel) return;
+  const scene = currentModel.scene || currentModel;
+  scene.traverse(o => {
+    if (o.isBone && !posableBones[o.name]) posableBones[o.name] = o;
+  });
+}
+
+// bone 当前 quaternion 相对 restQuat 的差 → XYZ 欧拉(度)
+function boneDeltaEuler(bone) {
+  const rest = bone.userData.restQuat || new THREE.Quaternion();
+  const delta = rest.clone().invert().multiply(bone.quaternion);
+  const e = new THREE.Euler().setFromQuaternion(delta, 'XYZ');
+  return { x: e.x * R2D, y: e.y * R2D, z: e.z * R2D };
+}
+
+// 按限位夹紧选中骨骼:分解相对 rest 的欧拉 → clamp → 写回
+function clampBoneToLimits(bone) {
+  const lim = POSE_LIMITS[bone.name];
+  if (!lim) return;
+  const e = boneDeltaEuler(bone); // 度
+  const cx = Math.max(lim.x[0], Math.min(lim.x[1], e.x));
+  const cy = Math.max(lim.y[0], Math.min(lim.y[1], e.y));
+  const cz = Math.max(lim.z[0], Math.min(lim.z[1], e.z));
+  if (cx === e.x && cy === e.y && cz === e.z) return;
+  const rest = bone.userData.restQuat || new THREE.Quaternion();
+  const dq = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(cx * D2R, cy * D2R, cz * D2R, 'XYZ'));
+  bone.quaternion.copy(rest).multiply(dq);
+}
+
+function ensureGizmo() {
+  if (poseGizmo) return;
+  poseGizmo = new TransformControls(camera, renderer.domElement);
+  poseGizmo.setMode('rotate');
+  poseGizmo.setSpace('local');
+  poseGizmo.setSize(0.7);
+  poseGizmo.addEventListener('dragging-changed', e => {
+    controls.enabled = !e.value;
+  });
+  poseGizmo.addEventListener('objectChange', () => {
+    if (poseSelected) clampBoneToLimits(poseSelected);
+  });
+  scene.add(poseGizmo);
+}
+
+function createPoseHandles() {
+  removePoseHandles();
+  const r = Math.max((modelSize || 1) * 0.025, 0.01);
+  POSE_BONE_DEFS.forEach(([name]) => {
+    const bone = posableBones[name];
+    if (!bone) return;
+    const geo = new THREE.SphereGeometry(r, 12, 12);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffd24d, depthTest: false, transparent: true, opacity: 0.9 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 999;
+    mesh.userData.poseBoneName = name;
+    scene.add(mesh);
+    poseHandles.push({ mesh, bone, name });
+  });
+}
+
+function removePoseHandles() {
+  poseHandles.forEach(h => {
+    scene.remove(h.mesh);
+    h.mesh.geometry.dispose();
+    h.mesh.material.dispose();
+  });
+  poseHandles = [];
+}
+
+function syncPoseHandles() {
+  poseHandles.forEach(h => {
+    h.bone.getWorldPosition(_wpos);
+    h.mesh.position.copy(_wpos);
+  });
+}
+
+function selectPoseBone(bone, name) {
+  poseSelected = bone;
+  ensureGizmo();
+  poseGizmo.attach(bone);
+  poseHandles.forEach(h => {
+    const on = h.bone === bone;
+    h.mesh.material.color.set(on ? 0x4dff88 : 0xffd24d);
+    h.mesh.scale.setScalar(on ? 1.6 : 1.0);
+  });
+  document.getElementById('pose-selected').textContent = POSE_LABELS[name] || name;
+}
+
+function onPosePointerDown(ev) {
+  if (!poseMode) return;
+  if (poseGizmo && (poseGizmo.dragging || poseGizmo.axis)) return; // 正在拖 gizmo
+  const rect = renderer.domElement.getBoundingClientRect();
+  poseMouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  poseMouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  poseRay.setFromCamera(poseMouse, camera);
+  const hits = poseRay.intersectObjects(poseHandles.map(h => h.mesh), false);
+  if (hits.length) {
+    const name = hits[0].object.userData.poseBoneName;
+    const h = poseHandles.find(x => x.name === name);
+    if (h) selectPoseBone(h.bone, name);
+  }
+}
+
+function enterPoseMode() {
+  if (!currentModel) return;
+  gatherPosableBones();
+  if (Object.keys(posableBones).length === 0) { alert('当前模型没有可调骨骼'); return; }
+  selectAnim('__none__', '静止');
+  Object.values(posableBones).forEach(b => {
+    if (b.userData.restQuat) b.quaternion.copy(b.userData.restQuat);
+  });
+  poseMode = true;
+  poseSelected = null;
+  createPoseHandles();
+  syncPoseHandles();
+  document.getElementById('pose-selected').textContent = '(未选)';
+  document.getElementById('pose-body').style.display = 'block';
+  const btn = document.getElementById('pose-toggle');
+  btn.textContent = '退出摆姿势模式'; btn.style.background = '#a52';
+  renderer.domElement.addEventListener('pointerdown', onPosePointerDown);
+}
+
+function exitPoseMode() {
+  poseMode = false;
+  if (poseGizmo) { poseGizmo.detach(); }
+  poseSelected = null;
+  removePoseHandles();
+  controls.enabled = true;
+  document.getElementById('pose-body').style.display = 'none';
+  const btn = document.getElementById('pose-toggle');
+  if (btn) { btn.textContent = '进入摆姿势模式'; btn.style.background = '#2a5'; }
+  renderer.domElement.removeEventListener('pointerdown', onPosePointerDown);
+}
+
+document.getElementById('pose-toggle').addEventListener('click', () => {
+  if (poseMode) exitPoseMode(); else enterPoseMode();
+});
+document.getElementById('pose-reset').addEventListener('click', () => {
+  Object.values(posableBones).forEach(b => {
+    if (b.userData.restQuat) b.quaternion.copy(b.userData.restQuat);
+  });
+  if (poseGizmo) poseGizmo.detach();
+  poseSelected = null;
+  poseHandles.forEach(h => { h.mesh.material.color.set(0xffd24d); h.mesh.scale.setScalar(1); });
+  document.getElementById('pose-selected').textContent = '(未选)';
+});
+document.getElementById('pose-copy').addEventListener('click', () => {
+  const lines = [];
+  POSE_BONE_DEFS.forEach(([name, label]) => {
+    const bone = posableBones[name];
+    if (!bone) return;
+    const e = boneDeltaEuler(bone);
+    if (Math.abs(e.x) < 0.5 && Math.abs(e.y) < 0.5 && Math.abs(e.z) < 0.5) return;
+    lines.push(`${name} (${label}): X=${e.x.toFixed(1)} Y=${e.y.toFixed(1)} Z=${e.z.toFixed(1)}`);
+  });
+  const text = lines.length ? lines.join('\n') : '(姿势为初始状态)';
+  navigator.clipboard?.writeText(text).then(
+    () => { const b = document.getElementById('pose-copy'); const o = b.textContent; b.textContent = '已复制 ✓'; setTimeout(() => b.textContent = o, 1200); },
+    () => alert(text)
+  );
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  if (currentMixer && !isPaused && !poseMode) currentMixer.update(dt);
+  if (poseMode) syncPoseHandles();
+  controls.update();
+
+  // update scrub bar
+  if (currentAction && !isPaused) {
+    const dur = currentAction.getClip().duration;
+    const t = (currentAction.time % dur);
+    scrub.value = (t / dur) * 1000;
+    timeLabel.textContent = `${t.toFixed(2)} / ${dur.toFixed(2)}`;
+
+    // animation→face timeline
+    const linkEl = document.getElementById('face-anim-link');
+    if (linkEl && linkEl.checked) {
+      const clipName = currentAction.getClip().name;
+      const tl = animFaceTimeline[clipName];
+      if (tl) {
+        const p = t / dur;
+        let target = tl[0].face;
+        for (const seg of tl) if (p >= seg.at) target = seg.face;
+        if (target !== lastTimelineFace) {
+          lastTimelineFace = target;
+          const fs = document.getElementById('face-select');
+          if (fs) fs.value = target;
+          applyJoyFace(target);
+        }
+      }
+    }
+  }
+
+  // Sync bone markers and lines during animation (only when animation is playing)
+  if (typeof boneMarkerSync !== 'undefined' && boneMarkerSync.length && currentMixer && !isPaused && currentAction) {
+    const wp = new THREE.Vector3();
+    boneMarkerSync.forEach(({ marker, bone }) => {
+      if (bone && marker) {
+        bone.getWorldPosition(wp);
+        marker.position.copy(wp);
+      }
+    });
+    if (typeof boneLineSync !== 'undefined') {
+      boneLineSync.forEach(({ line, a, b }) => {
+        const positions = line.geometry.attributes.position;
+        positions.setXYZ(0, a.position.x, a.position.y, a.position.z);
+        positions.setXYZ(1, b.position.x, b.position.y, b.position.z);
+        positions.needsUpdate = true;
+      });
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = wrap.clientWidth / wrap.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+});
+
+// initial env
+applyEnv('studio');
+
+// Expose for debugging via console
+window.__viewer = { scene, camera, renderer, THREE, GLTFExporter, GLTFLoader, get model() { return currentModel; }, get arms() { return graftedArms; } };
+
+// Auto-load the bundled default model, apply the Meshy preset, then
+// run the full default-dog config (auto-rig + graft arms + transfer
+// materials from tripo_part_6/7 + apply the user-tuned T-pose offsets).
+loadFromUrl('assets/joy_rigged.glb?v=' + Date.now(), 'JOY标准绑定 (默认模型)').then(async () => {
+  if (!currentModel) return;
+  document.getElementById('face-section').style.display = 'block';
+  document.getElementById('pose-section').style.display = 'block';
+  document.getElementById('bone-adjust-section').style.display = 'block';
+  joyHeadMesh = null;
+  joyOriginalMat = null;
+  const cb = document.querySelector('#show-skeleton');
+  if (cb && !cb.checked) cb.click();
+  selectAnim('__none__', '静止');
+  setTimeout(() => {
+    applyJoyFace('02大笑');
+    applyJoyColors();
+    initBoneAdjust();
+    const sheenCb = document.getElementById('joy-sheen-toggle');
+    if (sheenCb) sheenCb.onchange = () => setJoySheenEnabled(sheenCb.checked);
+  }, 100);
+  try { restoreSavedState(); } catch (e) { console.error('[Auto] restoreSavedState threw:', e); }
+}).catch(e => console.error('[Auto] outer chain caught:', e));
+
+// ---------- Default model switcher ----------
+document.getElementById('load-default-2').addEventListener('click', async e => {
+  e.preventDefault();
+  await loadFromUrl('assets/joy_rigged.glb?v=' + Date.now(), 'JOY标准绑定 (默认模型)');
+  if (!currentModel) return;
+  document.getElementById('face-section').style.display = 'block';
+  document.getElementById('pose-section').style.display = 'block';
+  document.getElementById('bone-adjust-section').style.display = 'block';
+  joyHeadMesh = null;
+  joyOriginalMat = null;
+  // 默认显示骨骼
+  const cb = document.querySelector('#show-skeleton');
+  if (cb && !cb.checked) cb.click();
+  // 默认静止姿势
+  selectAnim('__none__', '静止');
+  setTimeout(() => {
+    applyJoyFace('02大笑');
+    applyJoyColors();
+    initBoneAdjust();
+    const sheenCb = document.getElementById('joy-sheen-toggle');
+    if (sheenCb) {
+      sheenCb.onchange = () => setJoySheenEnabled(sheenCb.checked);
+      if (sheenCb.checked) setJoySheenEnabled(true);
+    }
+  }, 300);
+});
+
+// ---------- Bone Position Adjustment Tool ----------
+var boneMarkers = [];
+var boneMarkerSync = [];
+var boneLineSync = [];
+function initBoneAdjust() {
+  if (!currentModel) return;
+  const container = document.getElementById('bone-sliders');
+  container.innerHTML = '';
+
+  // Remove old markers
+  boneMarkers.forEach(m => { scene.remove(m); if(m.geometry)m.geometry.dispose(); if(m.material)m.material.dispose(); });
+  boneMarkers = [];
+  boneMarkerSync = [];
+
+  const keyBones = ['Hips','L_Thigh','R_Thigh','L_Shin','R_Shin','L_UpperArm','R_UpperArm','L_ForeArm','R_ForeArm','L_Hand','R_Hand','Spine','Chest','Head','Tail1'];
+  const boneNames = {'Hips':'臀部','L_Thigh':'左大腿','R_Thigh':'右大腿','L_Shin':'左小腿','R_Shin':'右小腿','L_UpperArm':'左上臂','R_UpperArm':'右上臂','L_ForeArm':'左前臂','R_ForeArm':'右前臂','L_Hand':'左手腕','R_Hand':'右手腕','Spine':'脊柱','Chest':'胸部','Head':'头部','Tail1':'尾巴'};
+  const boneColors = {'Hips':0xff0000,'L_Thigh':0x00ff00,'R_Thigh':0x00cc00,'L_Shin':0x0088ff,'R_Shin':0x0066cc,'L_UpperArm':0xffaa00,'R_UpperArm':0xcc8800,'L_ForeArm':0xff6600,'R_ForeArm':0xcc4400,'L_Hand':0xff3300,'R_Hand':0xcc2200,'Spine':0xff00ff,'Chest':0xff66ff,'Head':0xffff00,'Tail1':0x00ffff};
+
+  const boneRefs = {};
+  const markerMap = {};
+
+  currentModel.traverse(o => {
+    if (o.isBone && keyBones.includes(o.name)) {
+      boneRefs[o.name] = o;
+    }
+  });
+
+  // Create sphere markers for each bone
+  keyBones.forEach(name => {
+    const bone = boneRefs[name];
+    if (!bone) return;
+    const wp = new THREE.Vector3();
+    bone.getWorldPosition(wp);
+
+    const geo = new THREE.SphereGeometry(0.04, 8, 8);
+    const mat = new THREE.MeshBasicMaterial({ color: boneColors[name] || 0xffffff, depthTest: false, transparent: true, opacity: 0.85 });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.position.copy(wp);
+    sphere.renderOrder = 999;
+    sphere.visible = false;
+    scene.add(sphere);
+    boneMarkers.push(sphere);
+    markerMap[name] = sphere;
+    boneMarkerSync.push({ marker: sphere, bone: bone });
+  });
+
+  // Draw connecting lines between markers
+  const connections = [['Hips','Spine'],['Spine','Chest'],['Chest','Head'],['Hips','L_Thigh'],['L_Thigh','L_Shin'],['Hips','R_Thigh'],['R_Thigh','R_Shin'],['Chest','L_UpperArm'],['L_UpperArm','L_ForeArm'],['L_ForeArm','L_Hand'],['Chest','R_UpperArm'],['R_UpperArm','R_ForeArm'],['R_ForeArm','R_Hand'],['Hips','Tail1']];
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff88, depthTest: false, transparent: true, opacity: 0.7 });
+  const lineObjs = [];
+  connections.forEach(([a, b]) => {
+    const ma = markerMap[a], mb = markerMap[b];
+    if (!ma || !mb) return;
+    const geo = new THREE.BufferGeometry().setFromPoints([ma.position.clone(), mb.position.clone()]);
+    const line = new THREE.Line(geo, lineMat);
+    line.renderOrder = 998;
+    line.visible = false;
+    scene.add(line);
+    boneMarkers.push(line);
+    lineObjs.push({ line, a: ma, b: mb });
+  });
+  boneLineSync = lineObjs;
+
+  // Hide the built-in skeleton helper (it's confusing with our markers)
+  const cb = document.querySelector('#show-skeleton');
+  if (cb && cb.checked) cb.click();
+
+  // Build sliders
+  keyBones.forEach(name => {
+    const marker = markerMap[name];
+    if (!marker) return;
+    const pos = marker.position;
+
+    const div = document.createElement('div');
+    div.style.cssText = 'margin:6px 0;padding:4px;background:#222;border-radius:4px;';
+    const colorHex = '#' + (boneColors[name] || 0xffffff).toString(16).padStart(6, '0');
+    div.innerHTML = `<div style="font-size:11px;font-weight:bold;color:${colorHex};">● ${boneNames[name] || name}</div>`;
+
+    ['x','y','z'].forEach(axis => {
+      const val = pos[axis];
+      const range = 1.5;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:4px;margin:2px 0;';
+      row.innerHTML = `
+        <span style="width:12px;font-size:10px;color:#aaa;">${axis.toUpperCase()}</span>
+        <input type="range" min="${(val-range).toFixed(3)}" max="${(val+range).toFixed(3)}" step="0.005" value="${val.toFixed(3)}" style="flex:1;height:14px;" data-bone="${name}" data-axis="${axis}">
+        <span style="width:44px;font-size:10px;color:#ccc;" class="bone-val">${val.toFixed(3)}</span>
+      `;
+      const slider = row.querySelector('input');
+      const label = row.querySelector('.bone-val');
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value);
+        label.textContent = v.toFixed(3);
+        marker.position[axis] = v;
+      });
+      div.appendChild(row);
+    });
+    container.appendChild(div);
+  });
+
+  document.getElementById('bone-copy-btn').onclick = () => {
+    // Output as percentage of model bounding box (0~1 range)
+    const mbox = new THREE.Box3().setFromObject(currentModel);
+    const msize = mbox.getSize(new THREE.Vector3());
+    const mmin = mbox.min;
+    const result = {};
+    keyBones.forEach(name => {
+      const m = markerMap[name];
+      if (!m) return;
+      result[name] = {
+        px: ((m.position.x - mmin.x) / msize.x).toFixed(4),
+        py: ((m.position.y - mmin.y) / msize.y).toFixed(4),
+        pz: ((m.position.z - mmin.z) / msize.z).toFixed(4),
+      };
+    });
+    const text = JSON.stringify(result, null, 2);
+    navigator.clipboard.writeText(text).then(() => {
+      document.getElementById('bone-values-output').textContent = '✅ 已复制（百分比模式）!';
+    }).catch(() => {
+      document.getElementById('bone-values-output').textContent = text;
+    });
+  };
+
+  // 收起/展开
+  document.getElementById('bone-collapse-btn').onclick = () => {
+    const body = document.getElementById('bone-adjust-body');
+    const btn = document.getElementById('bone-collapse-btn');
+    if (body.style.display === 'none') {
+      body.style.display = '';
+      btn.textContent = '收起 ▲';
+    } else {
+      body.style.display = 'none';
+      btn.textContent = '展开 ▼';
+    }
+  };
+
+  // 隐藏/显示标记
+  document.getElementById('bone-hide-btn').onclick = () => {
+    const btn = document.getElementById('bone-hide-btn');
+    const visible = boneMarkers.length > 0 && boneMarkers[0].visible;
+    boneMarkers.forEach(m => { m.visible = !visible; });
+    btn.textContent = visible ? '显示标记' : '隐藏标记';
+  };
+}
+
+// ---------- JOY Face Expression System ----------
+let joyHeadMesh = null;
+let joyOriginalMat = null;
+let joyCurrentFace = null;
+let joySheenEnabled = false;
+let joyAmbientGroup = null;
+const joyFaceCache = {};
+
+function applyJoyFace(name) {
+  if (!currentModel) return;
+  const scene = currentModel.scene || currentModel;
+  if (!joyHeadMesh) {
+    scene.traverse(obj => {
+      if (obj.isMesh && obj.name === '网格004') joyHeadMesh = obj;
+    });
+  }
+  if (!joyHeadMesh) return;
+  if (!joyOriginalMat) joyOriginalMat = joyHeadMesh.material;
+
+  joyCurrentFace = name || null;
+
+  if (!name) {
+    joyHeadMesh.material = joyOriginalMat;
+    return;
+  }
+
+  const url = 'assets/joy_faces/' + encodeURIComponent(name) + '.png';
+  if (joyFaceCache[name]) {
+    setFaceTex(joyFaceCache[name]);
+  } else {
+    new THREE.TextureLoader().load(url, tex => {
+      tex.flipY = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      joyFaceCache[name] = tex;
+      setFaceTex(tex);
+    });
+  }
+
+  function setFaceTex(tex) {
+    joyHeadMesh.material = new THREE.MeshStandardMaterial({
+      map: tex,
+      color: 0xffffff,
+      roughness: 0.5
+    });
+    joyHeadMesh.material.map.offset.set(0, 0.01);
+    joyHeadMesh.material.map.repeat.set(1, 1);
+  }
+}
+
+function setJoySheenEnabled(on) {
+  joySheenEnabled = !!on;
+  if (joyAmbientGroup) {
+    scene.remove(joyAmbientGroup);
+    joyAmbientGroup.traverse(o => { if (o.dispose) o.dispose(); });
+    joyAmbientGroup = null;
+  }
+  if (!joySheenEnabled) return;
+
+  joyAmbientGroup = new THREE.Group();
+  joyAmbientGroup.name = 'joyAmbientLights';
+
+  // 上方暖粉天光 / 下方冷紫地光,模拟环境染色
+  const hemi = new THREE.HemisphereLight(0xffc0d4, 0x8aa0ff, 0.55);
+  hemi.position.set(0, 1, 0);
+  joyAmbientGroup.add(hemi);
+
+  // 左前暖粉补光,打在脸颊
+  const warm = new THREE.PointLight(0xff90b8, 0.9, 6, 1.5);
+  warm.position.set(-1.2, 1.3, 1.4);
+  joyAmbientGroup.add(warm);
+
+  // 右后冷蓝边光,打在耳朵和身体
+  const cool = new THREE.PointLight(0x9fb8ff, 0.7, 6, 1.5);
+  cool.position.set(1.4, 1.6, -1.0);
+  joyAmbientGroup.add(cool);
+
+  scene.add(joyAmbientGroup);
+}
+
+function applyJoyColors() {
+  if (!currentModel) return;
+  const scene = currentModel.scene || currentModel;
+  scene.traverse(obj => {
+    if (obj.isMesh && obj.name === '网格004_1') {
+      obj.material = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.3 });
+    }
+    if (obj.isMesh && obj.name === 'collar_2') {
+      obj.material = new THREE.MeshStandardMaterial({ color: new THREE.Color(225/255, 20/255, 20/255), roughness: 0.4 });
+    }
+  });
+}
+
+function createJoyAnimations() {
+  const scene = window.__viewer.scene;
+  const boneMap = {};
+  scene.traverse(obj => { if(obj.isBone) boneMap[obj.name] = obj; });
+
+  function eulerQ(x,y,z) {
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(x,y,z));
+    return [q.x, q.y, q.z, q.w];
+  }
+  function qTrack(name, times, quats) {
+    return new THREE.QuaternionKeyframeTrack(name + '.quaternion', times, quats);
+  }
+
+  const t = [0, 0.25, 0.5, 0.75, 1.0];
+
+  // Idle
+  const idleClip = new THREE.AnimationClip('待机 / Idle', 1.0, [
+    qTrack('Pelvis_bind', [0,0.5,1], [...eulerQ(0,0,0),...eulerQ(0.02,0,0),...eulerQ(0,0,0)]),
+    qTrack('tail_1', t, [...eulerQ(0,0,0),...eulerQ(0,0,0.3),...eulerQ(0,0,0),...eulerQ(0,0,-0.3),...eulerQ(0,0,0)]),
+    qTrack('tail_2', t, [...eulerQ(0,0,0),...eulerQ(0,0,0.4),...eulerQ(0,0,0),...eulerQ(0,0,-0.4),...eulerQ(0,0,0)]),
+    qTrack('left_ear_1', [0,0.5,1], [...eulerQ(0,0,0),...eulerQ(0.05,0,0),...eulerQ(0,0,0)]),
+    qTrack('Right_ear_1', [0,0.5,1], [...eulerQ(0,0,0),...eulerQ(0.05,0,0),...eulerQ(0,0,0)]),
+  ]);
+
+  // Walk
+  const walkClip = new THREE.AnimationClip('走路 / Walk', 1.0, [
+    qTrack('Pelvis_bind', t, [...eulerQ(0,0,0),...eulerQ(0.05,0,0.02),...eulerQ(0,0,0),...eulerQ(0.05,0,-0.02),...eulerQ(0,0,0)]),
+    qTrack('L_up_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(-0.4,0,0),...eulerQ(0,0,0),...eulerQ(0.3,0,0),...eulerQ(0,0,0)]),
+    qTrack('L_low_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.3,0,0),...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0)]),
+    qTrack('R_up_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.3,0,0),...eulerQ(0,0,0),...eulerQ(-0.4,0,0),...eulerQ(0,0,0)]),
+    qTrack('R_low_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0),...eulerQ(0.3,0,0),...eulerQ(0,0,0)]),
+    qTrack('L_up_arm_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.3,0,0),...eulerQ(0,0,0),...eulerQ(-0.3,0,0),...eulerQ(0,0,0)]),
+    qTrack('R_up_arm_1_skl', t, [...eulerQ(0,0,0),...eulerQ(-0.3,0,0),...eulerQ(0,0,0),...eulerQ(0.3,0,0),...eulerQ(0,0,0)]),
+    qTrack('tail_1', t, [...eulerQ(0,0,0),...eulerQ(0,0,0.3),...eulerQ(0,0,0),...eulerQ(0,0,-0.3),...eulerQ(0,0,0)]),
+  ]);
+
+  // Run
+  const runClip = new THREE.AnimationClip('跑步 / Run', 0.6, [
+    qTrack('Spine01_bind', [0,0.5,1], [...eulerQ(0.1,0,0),...eulerQ(0.15,0,0),...eulerQ(0.1,0,0)]),
+    qTrack('L_up_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(-0.7,0,0),...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0)]),
+    qTrack('L_low_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0),...eulerQ(0.9,0,0),...eulerQ(0,0,0)]),
+    qTrack('R_up_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0),...eulerQ(-0.7,0,0),...eulerQ(0,0,0)]),
+    qTrack('R_low_leg_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.9,0,0),...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0)]),
+    qTrack('L_up_arm_1_skl', t, [...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0),...eulerQ(-0.5,0,0),...eulerQ(0,0,0)]),
+    qTrack('R_up_arm_1_skl', t, [...eulerQ(0,0,0),...eulerQ(-0.5,0,0),...eulerQ(0,0,0),...eulerQ(0.5,0,0),...eulerQ(0,0,0)]),
+    qTrack('left_ear_1', t, [...eulerQ(0,0,0),...eulerQ(0.2,0,0),...eulerQ(0,0,0),...eulerQ(-0.1,0,0),...eulerQ(0,0,0)]),
+    qTrack('Right_ear_1', t, [...eulerQ(0,0,0),...eulerQ(-0.1,0,0),...eulerQ(0,0,0),...eulerQ(0.2,0,0),...eulerQ(0,0,0)]),
+    qTrack('tail_1', t, [...eulerQ(0,0,0),...eulerQ(0,0,0.4),...eulerQ(0,0,0),...eulerQ(0,0,-0.4),...eulerQ(0,0,0)]),
+  ]);
+
+  // Wave
+  const waveClip = new THREE.AnimationClip('挥手 / Wave', 1.2, [
+    qTrack('R_up_arm_1_skl', [0,0.25,0.5,0.75,1], [...eulerQ(0,0,-1.2),...eulerQ(0,0,-1.2),...eulerQ(0,0,-1.2),...eulerQ(0,0,-1.2),...eulerQ(0,0,-1.2)]),
+    qTrack('R_low_arm_1_skl', [0,0.25,0.5,0.75,1], [...eulerQ(0,0.3,0),...eulerQ(0,-0.3,0),...eulerQ(0,0.3,0),...eulerQ(0,-0.3,0),...eulerQ(0,0.3,0)]),
+    qTrack('Spine02_bind', [0,0.5,1], [...eulerQ(0,0.05,0),...eulerQ(0,-0.05,0),...eulerQ(0,0.05,0)]),
+    qTrack('tail_1', t, [...eulerQ(0,0,0),...eulerQ(0,0,0.5),...eulerQ(0,0,0),...eulerQ(0,0,-0.5),...eulerQ(0,0,0)]),
+    qTrack('tail_2', t, [...eulerQ(0,0,0),...eulerQ(0,0,0.3),...eulerQ(0,0,0),...eulerQ(0,0,-0.3),...eulerQ(0,0,0)]),
+  ]);
+
+  const clips = [idleClip, walkClip, runClip, waveClip];
+  const mixer = new THREE.AnimationMixer(scene);
+  window.__joyMixer = mixer;
+  window.__joyActions = {};
+  clips.forEach(clip => {
+    const action = mixer.clipAction(clip);
+    action.setLoop(THREE.LoopRepeat);
+    window.__joyActions[clip.name] = action;
+  });
+  window.__joyActions['待机 / Idle'].play();
+
+  const clock = new THREE.Clock();
+  function joyAnimLoop() {
+    if (!window.__joyMixer) return;
+    requestAnimationFrame(joyAnimLoop);
+    mixer.update(clock.getDelta());
+  }
+  joyAnimLoop();
+
+  return clips;
+}
+
+document.getElementById('face-select').addEventListener('change', function() {
+  applyJoyFace(this.value);
+});
+
+// Hide face section when loading non-JOY model
+document.getElementById('load-default-1').addEventListener('click', () => {
+  document.getElementById('face-section').style.display = 'none';
+  document.getElementById('pose-section').style.display = 'none';
+  if (poseMode) exitPoseMode();
+  joyHeadMesh = null;
+  joyOriginalMat = null;
+});
+
+// ---------- Save/restore user adjustments ----------
+const STATE_KEY = 'viewer-3d-state-v1';
+
+function findPartByName(name) {
+  let f = null;
+  if (currentModel) currentModel.traverse(o => {
+    if (!f && (o.isMesh || o.isSkinnedMesh) && o.name === name) f = o;
+  });
+  if (!f) for (const a of graftedArms) if (a.name === name) { f = a; break; }
+  return f;
+}
+
+function captureState() {
+  const parts = {};
+  const visit = (p) => {
+    snapshotPart(p);
+    const orig = partOriginals.get(p);
+    const wp = new THREE.Vector3();
+    p.getWorldPosition(wp);
+    const dx = wp.x - orig.origWorldPos.x;
+    const dy = wp.y - orig.origWorldPos.y;
+    const dz = wp.z - orig.origWorldPos.z;
+    const sc = p.scale.x / orig.origScale.x;
+    const ry = p.rotation.y - orig.origRotY;
+    const cs = __partColorState.get(p);
+    parts[p.name] = {
+      visible: p.visible,
+      dx: +dx.toFixed(4), dy: +dy.toFixed(4), dz: +dz.toFixed(4),
+      sc: +sc.toFixed(4), ry: +ry.toFixed(4),
+      color: cs ? { mode: cs.mode, top: cs.top, bottom: cs.bottom } : null,
+    };
+  };
+  if (currentModel) currentModel.traverse(o => { if (o.isMesh || o.isSkinnedMesh) visit(o); });
+  for (const a of graftedArms) visit(a);
+
+  // Bone offsets (per-bone position deltas relative to autoRig rest pose)
+  const bones = {};
+  for (const [b, orig] of __boneOriginals) {
+    const dx = b.position.x - orig.x;
+    const dy = b.position.y - orig.y;
+    const dz = b.position.z - orig.z;
+    if (Math.abs(dx) > 1e-5 || Math.abs(dy) > 1e-5 || Math.abs(dz) > 1e-5) {
+      bones[b.name] = { dx: +dx.toFixed(4), dy: +dy.toFixed(4), dz: +dz.toFixed(4) };
+    }
+  }
+
+  return {
+    version: 2,
+    parts,
+    bones,
+    material: {
+      sat:    parseFloat(document.getElementById('mat-sat').value),
+      bright: parseFloat(document.getElementById('mat-bright').value),
+      white:  parseFloat(document.getElementById('mat-white').value),
+      emit:   parseFloat(document.getElementById('mat-emit').value),
+    },
+    renderStyle: document.getElementById('render-style').value,
+    env: document.getElementById('env-select').value,
+    bg:  document.getElementById('bg-select').value,
+    exposure: parseFloat(document.getElementById('exposure').value),
+  };
+}
+
+function restoreSavedState() {
+  let raw;
+  try { raw = localStorage.getItem(STATE_KEY); } catch (e) { return; }
+  if (!raw) return;
+  let state;
+  try { state = JSON.parse(raw); } catch (e) { console.warn('[State] corrupt save, ignoring:', e); return; }
+  // Accept v1 (no bones) or v2 (with bones)
+  if (state.version !== 1 && state.version !== 2) return;
+
+  // Per-part overrides
+  for (const [name, ps] of Object.entries(state.parts || {})) {
+    const part = findPartByName(name);
+    if (!part) continue;
+    if (typeof ps.visible === 'boolean') part.visible = ps.visible;
+    snapshotPart(part);
+    const orig = partOriginals.get(part);
+    const desiredWorld = orig.origWorldPos.clone().add(new THREE.Vector3(ps.dx || 0, ps.dy || 0, ps.dz || 0));
+    if (part.parent) {
+      part.parent.updateMatrixWorld(true);
+      part.position.copy(part.parent.worldToLocal(desiredWorld.clone()));
+    }
+    part.scale.copy(orig.origScale).multiplyScalar(ps.sc ?? 1);
+    part.rotation.y = orig.origRotY + (ps.ry || 0);
+    if (ps.color) applyPartColor(part, ps.color.mode, ps.color.top, ps.color.bottom);
+  }
+
+  // Bone offsets — apply to whatever bones exist by name (rig must match the
+  // saved skeleton; if we restructured bones the unknown ones are skipped).
+  if (state.bones) {
+    for (const [boneName, off] of Object.entries(state.bones)) {
+      let bone = null;
+      scene.traverse(o => { if (!bone && o.isBone && o.name === boneName) bone = o; });
+      if (!bone) continue;
+      const orig = __boneOriginals.get(bone);
+      if (!orig) continue;
+      bone.position.set(orig.x + (off.dx || 0), orig.y + (off.dy || 0), orig.z + (off.dz || 0));
+    }
+  }
+
+  // Material sliders
+  if (state.material) {
+    const setS = (id, v) => {
+      const el = document.getElementById(id);
+      if (el != null && v != null) { el.value = v; el.dispatchEvent(new Event('input')); }
+    };
+    setS('mat-sat',    state.material.sat);
+    setS('mat-bright', state.material.bright);
+    setS('mat-white',  state.material.white);
+    setS('mat-emit',   state.material.emit);
+  }
+
+  // Other selects
+  const setSel = (id, v, applyFn) => {
+    const el = document.getElementById(id);
+    if (el != null && v != null) { el.value = v; el.dispatchEvent(new Event('change')); applyFn?.(v); }
+  };
+  if (state.renderStyle) setSel('render-style', state.renderStyle);
+  if (state.env)         setSel('env-select',   state.env);
+  if (state.bg)          setSel('bg-select',    state.bg);
+  if (state.exposure != null) {
+    const el = document.getElementById('exposure');
+    el.value = state.exposure;
+    el.dispatchEvent(new Event('input'));
+  }
+
+  refreshPartsList();
+  document.getElementById('state-info').textContent = `✓ 已从保存恢复 (${Object.keys(state.parts || {}).length} 个部件)`;
+  console.log('[State] restored from localStorage:', state);
+}
+
+document.getElementById('state-save').addEventListener('click', () => {
+  const state = captureState();
+  try {
+    localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    document.getElementById('state-info').textContent = `💾 已保存 ${Object.keys(state.parts).length} 个部件 + 材质/视图设置`;
+    console.log('[State] saved:', state);
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+  }
+});
+document.getElementById('state-clear').addEventListener('click', () => {
+  try {
+    localStorage.removeItem(STATE_KEY);
+    document.getElementById('state-info').textContent = '🗑 已清除保存(刷新页面后生效)';
+  } catch (e) {}
+});
+
+async function applyTripoDogDefaults() {
+  // The default model file (assets/tripo/model.glb) is now baked: tripo_part_6
+  // and tripo_part_7 have been removed, and the two T-pose capsule arms are
+  // present as regular meshes (TPoseLeftArm / TPoseRightArm). Convert-to-
+  // skinned in autoRig recognizes those names and binds them 100% to
+  // UpperArm_L / UpperArm_R. So the only thing left to do here is rig.
+  autoRig();
+  refreshPartsList();
+  console.log('[Tripo dog defaults] auto-rig applied (capsules + missing parts already baked into model file)');
+}
+
+// 默认加载 JOY 标准绑定
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => {
+    const link = document.getElementById('load-default-2');
+    if (link) link.click();
+  }, 100);
+});
+</script>
+</body>
+</html>
