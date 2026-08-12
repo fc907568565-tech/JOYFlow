@@ -3,6 +3,8 @@ import type { SpecialtyCutoutSettings } from './specialtyWorkflow';
 export const DEFAULT_SPECIALTY_CUTOUT_SETTINGS: SpecialtyCutoutSettings = {
   threshold: 42,
   feather: 14,
+  shadowCleanup: 52,
+  edgeCleanup: 46,
   padding: 12,
   brightness: 0,
   contrast: 0,
@@ -103,6 +105,17 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
   return [channels[0][middle], channels[1][middle], channels[2][middle]] as const;
 };
 
+const parseBackgroundColor = (value?: string) => {
+  if (!value) return null;
+  const normalized = value.replace('#', '').trim();
+  if (!/^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(normalized)) return null;
+  const expanded = normalized.length === 3
+    ? normalized.split('').map((part) => `${part}${part}`).join('')
+    : normalized;
+  const color = Number.parseInt(expanded, 16);
+  return [(color >> 16) & 255, (color >> 8) & 255, color & 255] as const;
+};
+
 const applyColorAdjustments = (
   red: number,
   green: number,
@@ -127,7 +140,9 @@ export const renderSpecialtyCutout = async (
   source: string,
   settings: SpecialtyCutoutSettings,
   outputSize = 700,
-  maxProcessSide = 1400
+  maxProcessSide = 1400,
+  backgroundColor?: string,
+  adaptiveBackground = false,
 ): Promise<string> => {
     const prepared = await prepareSource(source, maxProcessSide);
     const { width, height } = prepared;
@@ -138,7 +153,7 @@ export const renderSpecialtyCutout = async (
     if (!context) throw new Error('当前浏览器不支持图片处理');
     const imageData = new ImageData(new Uint8ClampedArray(prepared.pixels), width, height);
     const pixels = imageData.data;
-    const background = estimateBackground(pixels, width, height);
+    const background = parseBackgroundColor(backgroundColor) || estimateBackground(pixels, width, height);
     const count = width * height;
     const connected = new Uint8Array(count);
     const queued = new Uint8Array(count);
@@ -147,6 +162,8 @@ export const renderSpecialtyCutout = async (
     let tail = 0;
     const featherRange = Math.max(1, settings.feather * 2.5);
     const searchLimit = settings.threshold + featherRange;
+    const backgroundLuminance = background[0] * 0.299 + background[1] * 0.587 + background[2] * 0.114;
+    const shadowSearchLimit = searchLimit + settings.shadowCleanup * 0.82;
 
     const distanceAt = (pixelIndex: number) => {
       const offset = pixelIndex * 4;
@@ -155,8 +172,35 @@ export const renderSpecialtyCutout = async (
       const db = pixels[offset + 2] - background[2];
       return Math.sqrt((dr * dr + dg * dg + db * db) / 3);
     };
-    const enqueue = (pixelIndex: number) => {
-      if (queued[pixelIndex] || distanceAt(pixelIndex) > searchLimit) return;
+    const colorStepAt = (pixelIndex: number, sourceIndex: number) => {
+      const offset = pixelIndex * 4;
+      const sourceOffset = sourceIndex * 4;
+      const dr = pixels[offset] - pixels[sourceOffset];
+      const dg = pixels[offset + 1] - pixels[sourceOffset + 1];
+      const db = pixels[offset + 2] - pixels[sourceOffset + 2];
+      return Math.sqrt((dr * dr + dg * dg + db * db) / 3);
+    };
+    const isBackgroundCandidate = (pixelIndex: number, sourceIndex = -1) => {
+      const distance = distanceAt(pixelIndex);
+      if (distance <= searchLimit) return true;
+      if (adaptiveBackground && sourceIndex >= 0) {
+        const adaptiveStep = 12 + settings.threshold * 0.18;
+        const adaptiveDistanceLimit = searchLimit + 92;
+        if (distance <= adaptiveDistanceLimit && colorStepAt(pixelIndex, sourceIndex) <= adaptiveStep) return true;
+      }
+      if (settings.shadowCleanup <= 0 || distance > shadowSearchLimit) return false;
+      const offset = pixelIndex * 4;
+      const red = pixels[offset];
+      const green = pixels[offset + 1];
+      const blue = pixels[offset + 2];
+      const chroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+      const luminance = red * 0.299 + green * 0.587 + blue * 0.114;
+      const neutralLimit = 24 + settings.shadowCleanup * 0.28;
+      const darknessLimit = 34 + settings.shadowCleanup * 0.72;
+      return chroma <= neutralLimit && luminance >= backgroundLuminance - darknessLimit;
+    };
+    const enqueue = (pixelIndex: number, sourceIndex = -1) => {
+      if (queued[pixelIndex] || !isBackgroundCandidate(pixelIndex, sourceIndex)) return;
       queued[pixelIndex] = 1;
       queue[tail] = pixelIndex;
       tail += 1;
@@ -177,10 +221,10 @@ export const renderSpecialtyCutout = async (
       connected[pixelIndex] = 1;
       const x = pixelIndex % width;
       const y = Math.floor(pixelIndex / width);
-      if (x > 0) enqueue(pixelIndex - 1);
-      if (x < width - 1) enqueue(pixelIndex + 1);
-      if (y > 0) enqueue(pixelIndex - width);
-      if (y < height - 1) enqueue(pixelIndex + width);
+      if (x > 0) enqueue(pixelIndex - 1, pixelIndex);
+      if (x < width - 1) enqueue(pixelIndex + 1, pixelIndex);
+      if (y > 0) enqueue(pixelIndex - width, pixelIndex);
+      if (y < height - 1) enqueue(pixelIndex + width, pixelIndex);
     }
 
     let minX = width;
@@ -192,10 +236,28 @@ export const renderSpecialtyCutout = async (
       let alpha = pixels[offset + 3];
       if (connected[pixelIndex]) {
         const distance = distanceAt(pixelIndex);
-        const edgeAlpha = distance <= settings.threshold
+        const shadowThreshold = settings.threshold + settings.shadowCleanup * 0.56;
+        const edgeAlpha = distance <= shadowThreshold
           ? 0
-          : clamp(((distance - settings.threshold) / featherRange) * 255);
+          : clamp(((distance - shadowThreshold) / featherRange) * 255);
         alpha = Math.min(alpha, edgeAlpha);
+      }
+      if (alpha > 0 && alpha < 255 && settings.edgeCleanup > 0) {
+        const cleanup = settings.edgeCleanup / 100;
+        const originalAlpha = alpha / 255;
+        const matteAlpha = Math.max(0.025, originalAlpha);
+        const recoveredRed = (pixels[offset] - background[0] * (1 - originalAlpha)) / matteAlpha;
+        const recoveredGreen = (pixels[offset + 1] - background[1] * (1 - originalAlpha)) / matteAlpha;
+        const recoveredBlue = (pixels[offset + 2] - background[2] * (1 - originalAlpha)) / matteAlpha;
+        pixels[offset] = clamp(pixels[offset] + (recoveredRed - pixels[offset]) * cleanup);
+        pixels[offset + 1] = clamp(pixels[offset + 1] + (recoveredGreen - pixels[offset + 1]) * cleanup);
+        pixels[offset + 2] = clamp(pixels[offset + 2] + (recoveredBlue - pixels[offset + 2]) * cleanup);
+        const transparentCutoff = settings.edgeCleanup * 0.52;
+        if (alpha <= transparentCutoff) alpha = 0;
+        else {
+          const normalized = (alpha - transparentCutoff) / Math.max(1, 255 - transparentCutoff);
+          alpha = clamp((normalized ** (1 - cleanup * 0.28)) * 255);
+        }
       }
       pixels[offset + 3] = alpha;
       if (alpha > 8) {

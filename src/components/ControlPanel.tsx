@@ -205,12 +205,21 @@ export const ControlPanel: React.FC<ControlPanelProps> = (p) => {
           <div className="space-y-3">
             <div>
               <p className="text-[11px] text-neutral-500 mb-1.5 flex items-center gap-1.5"><FileJson size={11} /> {t.exportFormat}</p>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button onClick={() => p.setExportFormat('LOTTIE')}
                   className={`flex-1 py-2 rounded-md text-xs font-semibold transition-all border ${p.exportFormat === 'LOTTIE' ? 'bg-[var(--primary)] border-[var(--primary)] text-white' : 'panel-sub text-neutral-400 hover:text-neutral-200'}`}>{t.formatLottie}</button>
                 <button disabled={activeMode !== 'video'} onClick={() => p.setExportFormat('MP4')}
                   className={`flex-1 py-2 rounded-md text-xs font-semibold transition-all border disabled:opacity-30 disabled:cursor-not-allowed ${p.exportFormat === 'MP4' ? 'bg-[var(--primary)] border-[var(--primary)] text-white' : 'panel-sub text-neutral-400 hover:text-neutral-200'}`}>{t.formatMp4}</button>
+                <button disabled={activeMode !== 'video'} onClick={() => p.setExportFormat('GIF')}
+                  className={`flex-1 py-2 rounded-md text-xs font-semibold transition-all border disabled:opacity-30 disabled:cursor-not-allowed ${p.exportFormat === 'GIF' ? 'bg-[var(--primary)] border-[var(--primary)] text-white' : 'panel-sub text-neutral-400 hover:text-neutral-200'}`}>{t.formatGif}</button>
               </div>
+              {p.exportFormat === 'GIF' && (
+                <p className="mt-2 rounded-md border border-cyan-400/15 bg-cyan-400/5 px-2.5 py-2 text-[10px] leading-4 text-cyan-100/60">
+                  {p.lang === 'zh'
+                    ? `GIF 不包含声音；当前抽帧设置约输出 ${Math.max(1, Math.round(30 / p.frameSkip))} FPS，并支持绿幕透明背景。`
+                    : `GIF has no audio. Current frame sampling exports about ${Math.max(1, Math.round(30 / p.frameSkip))} FPS and supports chroma-key transparency.`}
+                </p>
+              )}
             </div>
             <Slider label={t.frameSkip} value={p.frameSkip} min={1} max={10} display={`1/${p.frameSkip}`} onChange={(v) => p.setFrameSkip(Math.round(v))} accent="text-orange-400" />
             <div>
@@ -225,7 +234,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = (p) => {
                 ))}
               </div>
             </div>
-            {p.exportFormat === 'LOTTIE' && (
+            {(p.exportFormat === 'LOTTIE' || p.exportFormat === 'GIF') && (
               <Slider label={t.quality} value={p.quality} min={0.1} max={1} step={0.05} display={`${Math.round(p.quality * 100)}%`} onChange={p.setQuality} accent="text-purple-400" />
             )}
             {p.exportFormat === 'MP4' && (

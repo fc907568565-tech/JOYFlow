@@ -1,8 +1,8 @@
 // ===== Shared Types =====
 
 export type Lang = 'zh' | 'en';
-export type Mode = 'video' | 'sequence' | 'gif' | 'ai' | 'atlas' | 'specialty';
-export type ExportFormat = 'LOTTIE' | 'MP4';
+export type Mode = 'home' | 'video' | 'sequence' | 'gif' | 'ai' | 'atlas' | 'specialty' | 'popup';
+export type ExportFormat = 'LOTTIE' | 'MP4' | 'GIF';
 export type Status = 'IDLE' | 'PROCESSING' | 'DONE';
 
 export interface ProcessedFrame {

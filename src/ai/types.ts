@@ -31,6 +31,8 @@ export interface GeneratePayload {
   quality?: string;
   numImages?: number;
   referenceImages: string[];
+  /** 局部图片编辑遮罩：透明区域为需要修改的区域。 */
+  editMask?: string;
   // 图生视频的参考图
   firstFrame?: string;
   // 关键帧模式的尾帧
@@ -49,6 +51,9 @@ export interface GenerateTask {
   createdAt: number;
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   progress: number;
+  progressIsEstimated?: boolean;
+  batchSize?: number;
+  failedCount?: number;
   errorMessage?: string;
   resultUrls: string[];
   rawLastResponse?: unknown;
@@ -64,7 +69,7 @@ export interface NormalizedTaskResult {
 }
 
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
-  baseUrl: import.meta.env.DEV ? '/ark-api' : '/api/ark',
+  baseUrl: '/ark-api',
   apiKey: '',
   model: 'doubao-seedream-5-0-260128',
   imageGeneratePath: '/api/v3/images/generations',
