@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Check,
+  Clapperboard,
   Download,
   Image as ImageIcon,
   LoaderCircle,
@@ -9,12 +10,14 @@ import {
   RotateCcw,
   Save,
   SlidersHorizontal,
+  WandSparkles,
 } from 'lucide-react';
 import { addToLibrary, loadLibrary, type LibraryAsset } from '../utils/assetLibrary';
 import {
   DEFAULT_SPECIALTY_CUTOUT_SETTINGS,
   renderSpecialtyCutout,
 } from '../utils/specialtyCutout';
+import { runSmartCutout } from '../utils/smartCutoutService';
 import type {
   SpecialtyCutoutSettings,
   SpecialtyItem,
@@ -25,6 +28,7 @@ interface SpecialtyCutoutWorkspaceProps {
   project: SpecialtyProject;
   onProjectChange: (project: SpecialtyProject) => void;
   onBack: () => void;
+  onAnimate: (project: SpecialtyProject) => void;
 }
 
 interface SettingSliderProps {
@@ -35,6 +39,8 @@ interface SettingSliderProps {
   suffix?: string;
   onChange: (value: number) => void;
 }
+
+type CutoutMode = 'smart' | 'manual';
 
 const checkerboardStyle: React.CSSProperties = {
   backgroundColor: '#f4f4f5',
@@ -76,6 +82,7 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
   project,
   onProjectChange,
   onBack,
+  onAnimate,
 }) => {
   const selectedItems = useMemo(
     () => project.items.filter((item) => item.selectedAssetId),
@@ -87,13 +94,39 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
   const sourceAsset = activeItem?.selectedAssetId ? assets.get(activeItem.selectedAssetId) : undefined;
   const outputAsset = activeItem?.outputAssetId ? assets.get(activeItem.outputAssetId) : undefined;
   const [settings, setSettings] = useState<SpecialtyCutoutSettings>(() => mergeSettings(activeItem));
+  const [cutoutMode, setCutoutMode] = useState<CutoutMode>('smart');
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewError, setPreviewError] = useState('');
   const [rendering, setRendering] = useState(false);
+  const [progressLabel, setProgressLabel] = useState('');
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
   const previewRequestRef = useRef(0);
+  const smartPreviewCacheRef = useRef<Map<string, string>>(new Map());
+  const smartRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map());
+
+  const getSmartCutout = (
+    sourceUrl: string,
+    onProgress?: Parameters<typeof runSmartCutout>[1],
+  ) => {
+    const cached = smartPreviewCacheRef.current.get(sourceUrl);
+    if (cached) return Promise.resolve(cached);
+    const pending = smartRequestCacheRef.current.get(sourceUrl);
+    if (pending) return pending;
+    const request = runSmartCutout(sourceUrl, onProgress)
+      .then((url) => {
+        smartPreviewCacheRef.current.set(sourceUrl, url);
+        smartRequestCacheRef.current.delete(sourceUrl);
+        return url;
+      })
+      .catch((error) => {
+        smartRequestCacheRef.current.delete(sourceUrl);
+        throw error;
+      });
+    smartRequestCacheRef.current.set(sourceUrl, request);
+    return request;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -117,12 +150,26 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
       setPreviewUrl('');
       return;
     }
+    if (cutoutMode === 'smart') {
+      const cached = smartPreviewCacheRef.current.get(sourceAsset.url);
+      if (cached) {
+        previewRequestRef.current += 1;
+        setPreviewUrl(cached);
+        setPreviewError('');
+        setRendering(false);
+        setProgressLabel('');
+        return;
+      }
+    }
     const requestId = previewRequestRef.current + 1;
     previewRequestRef.current = requestId;
     const frame = window.requestAnimationFrame(() => {
       setRendering(true);
       setPreviewError('');
-      void renderSpecialtyCutout(sourceAsset.url, settings, 700, 720)
+      const renderTask = cutoutMode === 'smart'
+        ? getSmartCutout(sourceAsset.url, ({ percent, label }) => setProgressLabel(`${label} ${percent}%`))
+        : renderSpecialtyCutout(sourceAsset.url, settings, 700, 720);
+      void renderTask
         .then((url) => {
           if (previewRequestRef.current === requestId) setPreviewUrl(url);
         })
@@ -130,14 +177,17 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
           if (previewRequestRef.current === requestId) setPreviewError(error?.message || '透明图处理失败');
         })
         .finally(() => {
-          if (previewRequestRef.current === requestId) setRendering(false);
+          if (previewRequestRef.current === requestId) {
+            setRendering(false);
+            setProgressLabel('');
+          }
         });
     });
     return () => {
       window.cancelAnimationFrame(frame);
       if (previewRequestRef.current === requestId) previewRequestRef.current += 1;
     };
-  }, [settings, sourceAsset?.url]);
+  }, [cutoutMode, settings, sourceAsset?.url]);
 
   const updateSetting = (key: keyof SpecialtyCutoutSettings, value: number) => {
     setSettings((current) => ({ ...current, [key]: value }));
@@ -161,7 +211,7 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
     parentAssetId: item.selectedAssetId,
     selected: true,
     status: 'final',
-    generationParams: { ...appliedSettings, outputSize: 700 },
+    generationParams: { ...appliedSettings, outputSize: 700, cutoutMode },
     tags: ['特产道具', item.name, '透明PNG', '700x700'],
   });
 
@@ -169,13 +219,15 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
     if (!activeItem || !sourceAsset?.url || saving) return;
     setSaving(true);
     try {
-      const dataUrl = await renderSpecialtyCutout(sourceAsset.url, settings);
+      const dataUrl = cutoutMode === 'smart'
+        ? await getSmartCutout(sourceAsset.url)
+        : await renderSpecialtyCutout(sourceAsset.url, settings);
       const asset = await addOutputAsset(activeItem, dataUrl, settings);
       setAssets((current) => new Map(current).set(asset.id, asset));
       onProjectChange({
         ...project,
         items: project.items.map((item) => item.id === activeItem.id
-          ? { ...item, outputAssetId: asset.id, cutoutSettings: settings }
+          ? { ...item, outputAssetId: asset.id, cutoutSettings: settings, animationVideoAssetId: undefined, animationPrompt: undefined, animationSourceAssetId: undefined }
           : item),
       });
     } catch (error: any) {
@@ -195,7 +247,9 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
         const source = item.selectedAssetId ? assets.get(item.selectedAssetId) : undefined;
         if (!source?.url) throw new Error(`找不到“${item.name}”的候选图片`);
         const appliedSettings = item.id === activeItem?.id ? settings : mergeSettings(item);
-        const dataUrl = await renderSpecialtyCutout(source.url, appliedSettings);
+        const dataUrl = cutoutMode === 'smart'
+          ? await getSmartCutout(source.url)
+          : await renderSpecialtyCutout(source.url, appliedSettings);
         const asset = await addOutputAsset(item, dataUrl, appliedSettings);
         setAssets((current) => new Map(current).set(asset.id, asset));
         const itemIndex = nextItems.findIndex((entry) => entry.id === item.id);
@@ -203,6 +257,9 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
           ...nextItems[itemIndex],
           outputAssetId: asset.id,
           cutoutSettings: appliedSettings,
+          animationVideoAssetId: undefined,
+          animationPrompt: undefined,
+          animationSourceAssetId: undefined,
         };
         setBatchProgress({ current: index + 1, total: selectedItems.length });
       }
@@ -211,6 +268,45 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
       setPreviewError(error?.message || '批量处理失败');
     } finally {
       setBatchProgress(null);
+    }
+  };
+
+  const enterAnimation = async () => {
+    if (!activeItem || !sourceAsset?.url || !previewUrl || rendering || saving || batchProgress) return;
+    setSaving(true);
+    setPreviewError('');
+    try {
+      const savedSettings = mergeSettings(activeItem);
+      const settingsUnchanged = JSON.stringify(savedSettings) === JSON.stringify(settings);
+      const savedMode = outputAsset?.generationParams?.cutoutMode;
+      if (activeItem.outputAssetId && settingsUnchanged && savedMode === cutoutMode) {
+        onAnimate({ ...project, stage: 'animate' });
+        return;
+      }
+      const dataUrl = cutoutMode === 'smart'
+        ? await getSmartCutout(sourceAsset.url)
+        : await renderSpecialtyCutout(sourceAsset.url, settings);
+      const asset = await addOutputAsset(activeItem, dataUrl, settings);
+      setAssets((current) => new Map(current).set(asset.id, asset));
+      const nextProject: SpecialtyProject = {
+        ...project,
+        stage: 'animate',
+        items: project.items.map((item) => item.id === activeItem.id
+          ? {
+            ...item,
+            outputAssetId: asset.id,
+            cutoutSettings: settings,
+            animationVideoAssetId: undefined,
+            animationPrompt: undefined,
+            animationSourceAssetId: undefined,
+          }
+          : item),
+      };
+      onAnimate(nextProject);
+    } catch (error: any) {
+      setPreviewError(error?.message || '自动保存透明素材失败');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -232,7 +328,9 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
     setDownloading(true);
     setPreviewError('');
     try {
-      const url = outputAsset?.url || await renderSpecialtyCutout(sourceAsset!.url, settings);
+      const url = cutoutMode === 'smart'
+        ? await getSmartCutout(sourceAsset!.url)
+        : outputAsset?.url || await renderSpecialtyCutout(sourceAsset!.url, settings);
       const response = await fetch(url);
       if (!response.ok) throw new Error('PNG 文件准备失败');
       const blob = await response.blob();
@@ -269,8 +367,8 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
             <ArrowLeft size={15} /> 返回候选
           </button>
           <p className="mt-5 text-xs uppercase text-cyan-300">Specialty Props</p>
-          <h2 className="mt-1 text-xl font-semibold">抠图与尺寸规范</h2>
-          <p className="mt-2 text-xs leading-5 text-neutral-500">移除与边缘相连的浅色背景，并统一输出透明 PNG。</p>
+          <h2 className="mt-1 text-xl font-semibold">智能抠图与尺寸规范</h2>
+          <p className="mt-2 text-xs leading-5 text-neutral-500">自动保留完整道具、底座和关联部件，并统一输出透明 PNG。</p>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <div className="mb-3 flex items-center justify-between px-1 text-xs text-neutral-500">
@@ -307,7 +405,7 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
             onClick={() => void processAll()}
           >
             {batchProgress ? <LoaderCircle size={16} className="animate-spin" /> : <PackageCheck size={16} />}
-            {batchProgress ? `处理中 ${batchProgress.current}/${batchProgress.total}` : '批量自动处理全部'}
+            {batchProgress ? `智能抠图 ${batchProgress.current}/${batchProgress.total}` : '批量智能抠图全部'}
           </button>
         </div>
       </aside>
@@ -319,6 +417,7 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
             <p className="mt-1 text-xs text-neutral-600">{activeItem ? activeItem.name : '暂无选中素材'} · 700 × 700 px</p>
           </div>
           <div className="flex items-center gap-2">
+            <button disabled={!activeItem || !previewUrl || rendering || saving || Boolean(batchProgress)} className="flex h-9 items-center gap-2 rounded-md bg-violet-300 px-4 text-sm font-semibold text-[#130d18] hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-35" onClick={() => void enterAnimation()}>{saving ? <LoaderCircle size={14} className="animate-spin" /> : <Clapperboard size={14} />} {saving ? '正在自动保存' : '可选：制作道具动画'}</button>
             <button disabled={!canDownload || downloading} className="flex h-9 items-center gap-2 rounded-md border border-white/10 px-3 text-sm text-neutral-300 hover:border-cyan-400/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-35" onClick={() => void downloadCurrent()}>{downloading ? <LoaderCircle size={14} className="animate-spin" /> : <Download size={14} />} {downloading ? '正在准备' : '下载 PNG'}</button>
             <button disabled={!activeItem || !previewUrl || saving} className="flex h-9 items-center gap-2 rounded-md bg-cyan-400 px-4 text-sm font-semibold text-[#061315] disabled:opacity-35" onClick={() => void saveCurrent()}>{saving ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />} 保存当前到仓库</button>
           </div>
@@ -327,8 +426,8 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-8">
           <div className="relative aspect-square w-full max-w-[700px] overflow-hidden border border-white/10 shadow-2xl" style={checkerboardStyle}>
             {previewUrl && <img src={previewUrl} alt={`${activeItem?.name || ''} 透明预览`} className="h-full w-full object-contain" />}
-            {rendering && !previewUrl && <div className="absolute inset-0 flex items-center justify-center bg-black/25"><LoaderCircle size={28} className="animate-spin text-cyan-300" /></div>}
-            {rendering && previewUrl && <div className="absolute right-3 top-3 flex h-8 items-center gap-2 rounded-md bg-black/65 px-3 text-xs text-white"><LoaderCircle size={13} className="animate-spin text-cyan-300" /> 实时更新</div>}
+            {rendering && !previewUrl && <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/35"><LoaderCircle size={28} className="animate-spin text-cyan-300" /><span className="text-xs text-neutral-300">{progressLabel || (cutoutMode === 'smart' ? '正在智能识别完整道具' : '正在更新预览')}</span></div>}
+            {rendering && previewUrl && <div className="absolute right-3 top-3 flex h-8 items-center gap-2 rounded-md bg-black/65 px-3 text-xs text-white"><LoaderCircle size={13} className="animate-spin text-cyan-300" /> {progressLabel || '实时更新'}</div>}
             {!previewUrl && !rendering && <div className="absolute inset-0 flex flex-col items-center justify-center text-neutral-500"><ImageIcon size={32} /><p className="mt-3 text-sm">等待透明预览</p></div>}
           </div>
         </div>
@@ -336,15 +435,31 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
       </main>
 
       <aside className="w-[340px] shrink-0 overflow-y-auto border-l border-white/8 bg-[#101314] p-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2"><SlidersHorizontal size={16} className="text-cyan-300" /><h3 className="font-medium">透明与色彩</h3></div>
+        <div className="flex items-center gap-2"><WandSparkles size={16} className="text-cyan-300" /><h3 className="font-medium">道具抠图方式</h3></div>
+        <div className="mt-4 grid grid-cols-2 gap-1 rounded-lg border border-white/8 bg-black/25 p-1">
+          <button type="button" onClick={() => setCutoutMode('smart')} className={`h-9 rounded-md text-xs font-medium ${cutoutMode === 'smart' ? 'bg-cyan-300 text-[#061315]' : 'text-neutral-500 hover:text-white'}`}>智能抠图</button>
+          <button type="button" onClick={() => setCutoutMode('manual')} className={`h-9 rounded-md text-xs font-medium ${cutoutMode === 'manual' ? 'bg-white/12 text-white' : 'text-neutral-500 hover:text-white'}`}>手动调整</button>
+        </div>
+        {cutoutMode === 'smart' ? (
+          <div className="mt-6 rounded-md border border-cyan-300/15 bg-cyan-300/[0.055] p-5">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-300/12 text-cyan-200"><WandSparkles size={18} /></span>
+            <h4 className="mt-4 text-sm font-semibold text-cyan-50">自动保留完整道具组合</h4>
+            <p className="mt-2 text-xs leading-5 text-cyan-50/45">识别道具主体、底座和强关联部件，再精修透明边缘与白边。无需调整参数，预览结果即为最终保存结果。</p>
+            <div className="mt-4 rounded-md border border-white/8 bg-black/15 px-3 py-3 text-[11px] leading-5 text-neutral-500">统一输出 700 × 700 透明 PNG；批量处理会逐张调用同一套智能策略。</div>
+          </div>
+        ) : (
+        <>
+        <div className="mt-6 flex items-center justify-between">
+          <div className="flex items-center gap-2"><SlidersHorizontal size={16} className="text-neutral-400" /><h3 className="text-sm font-medium">手动透明与色彩</h3></div>
           <button className="flex h-8 items-center gap-1.5 rounded-md border border-white/10 px-2.5 text-xs text-neutral-400 hover:text-white" onClick={() => setSettings({ ...DEFAULT_SPECIALTY_CUTOUT_SETTINGS })}><RotateCcw size={12} /> 重置</button>
         </div>
-        <div className="mt-6 space-y-6">
+        <div className="mt-4 space-y-6">
           <section className="space-y-5 rounded-md border border-white/8 bg-black/15 p-4">
             <p className="text-xs font-medium text-neutral-500">背景去除</p>
             <SettingSlider label="去除强度" value={settings.threshold} min={10} max={90} onChange={(value) => updateSetting('threshold', value)} />
             <SettingSlider label="边缘柔化" value={settings.feather} min={0} max={35} onChange={(value) => updateSetting('feather', value)} />
+            <SettingSlider label="阴影清理" value={settings.shadowCleanup} min={0} max={100} onChange={(value) => updateSetting('shadowCleanup', value)} />
+            <SettingSlider label="白边净化" value={settings.edgeCleanup} min={0} max={100} onChange={(value) => updateSetting('edgeCleanup', value)} />
             <SettingSlider label="主体留白" value={settings.padding} min={4} max={30} suffix="%" onChange={(value) => updateSetting('padding', value)} />
           </section>
           <section className="space-y-5 rounded-md border border-white/8 bg-black/15 p-4">
@@ -356,8 +471,10 @@ export const SpecialtyCutoutWorkspace: React.FC<SpecialtyCutoutWorkspaceProps> =
           </section>
         </div>
         <div className="mt-5 rounded-md border border-white/8 p-4 text-xs leading-5 text-neutral-500">
-          当前版本适合模型生成的白色或浅色纯背景。复杂背景会保留原图，后续可再接入语义分割模型。
+          阴影清理会追踪与画布边缘连通的中性灰阴影；白边净化会还原半透明边缘中的白色底色。彩色复杂背景仍建议使用语义分割模型或手动蒙版。
         </div>
+        </>
+        )}
       </aside>
     </div>
   );

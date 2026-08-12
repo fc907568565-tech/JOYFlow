@@ -60,9 +60,17 @@ const toGeminiInlineData = async (image: string) => {
   };
 };
 
+const toJdGeminiInlineData = async (image: string) => {
+  const inlineData = await toGeminiInlineData(image);
+  return {
+    mimeType: inlineData.mime_type,
+    data: inlineData.data,
+  };
+};
+
 const normalizeArkBaseUrl = (baseUrl: string) =>
   /ark\.cn-beijing\.volces\.com|volcengine\.com/i.test(baseUrl)
-    ? (import.meta.env.DEV ? '/ark-api' : '/api/ark')
+    ? '/ark-api'
     : baseUrl;
 
 const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
@@ -112,6 +120,22 @@ const pushResultUrl = (urls: string[], value: unknown, mime = 'image/png') => {
   if (v.length > 200 && /^[A-Za-z0-9+/=\s]+$/.test(v)) {
     urls.push(`data:${mime};base64,${v.replace(/\s/g, '')}`);
   }
+};
+
+const collectNestedResultUrls = (value: unknown, urls: string[], depth = 0) => {
+  if (depth > 5 || value == null) return;
+  if (typeof value === 'string') {
+    pushResultUrl(urls, value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectNestedResultUrls(item, urls, depth + 1));
+    return;
+  }
+  if (typeof value !== 'object') return;
+  Object.values(value as Record<string, unknown>).forEach((item) => {
+    collectNestedResultUrls(item, urls, depth + 1);
+  });
 };
 
 const normalizeResult = (raw: any): NormalizedTaskResult => {
@@ -230,8 +254,22 @@ const normalizeResult = (raw: any): NormalizedTaskResult => {
     }
   }
 
+  // JD 异步任务将最终视频放在 result 对象中，字段层级可能随模型版本变化。
+  collectNestedResultUrls(raw?.result, urls);
+
   const taskId = String(
-    raw?.video_id ?? raw?.task_id ?? raw?.id ?? raw?.data?.task_id ?? raw?.data?.video_id ?? raw?.data?.id ?? raw?.task?.id ?? raw?.video?.id ?? ''
+    raw?.video_id
+      ?? raw?.task_id
+      ?? raw?.id
+      ?? raw?.result?.task_id
+      ?? raw?.result?.video_id
+      ?? raw?.result?.id
+      ?? raw?.data?.task_id
+      ?? raw?.data?.video_id
+      ?? raw?.data?.id
+      ?? raw?.task?.id
+      ?? raw?.video?.id
+      ?? ''
   ) || undefined;
 
   const progress = Number(raw?.progress ?? raw?.data?.progress ?? raw?.percent ?? raw?.video?.progress ?? 0);
@@ -335,6 +373,7 @@ const submitImageEdit = async (
     n: isJdGptImage ? 1 : Math.max(1, payload.numImages || 1),
     response_format: 'b64_json',
   };
+  if (payload.editMask) body.mask = payload.editMask;
 
   console.log('[AI-Debug] submitImageEdit URL:', url);
   console.log('[AI-Debug] submitImageEdit body (image field type):', typeof imageField, Array.isArray(imageField) ? `array[${imageInputs.length}]` : 'string');
@@ -354,6 +393,22 @@ const submitImageEdit = async (
     );
     console.log('[AI-Debug] submitImageEdit response:', JSON.stringify(raw).slice(0, 500));
   } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    if (isJdGptImage && payload.editMask && /mask|400|参数|invalid|parse/i.test(errorMessage)) {
+      console.warn('[AI-Debug] edit mask is not accepted, retrying with region prompt only:', err);
+      const fallbackBody = { ...body };
+      delete fallbackBody.mask;
+      raw = await requestJson(
+        url,
+        {
+          method: 'POST',
+          headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+          body: JSON.stringify(fallbackBody),
+        },
+        timeout
+      );
+      return normalizeResult(raw);
+    }
     if (isJdGptImage) throw err;
     // 如果 edit 端点失败，尝试回退到 generations 端点（带 image 字段）
     console.warn('[AI-Debug] submitImageEdit failed, falling back to generations endpoint:', err);
@@ -446,21 +501,31 @@ export const submitGenerateTask = async (
   const isArkApi = /volces\.com|volcengine\.com/.test(cfg.baseUrl) ||
     path.includes('/contents/generations') ||
     (path.includes('/v1/task/submit') && /seedance/i.test(cfg.model));
+  const isJdSeedanceTaskApi = /\/jd-api(?:\/|$)|llm-gw\.jd\.local/i.test(cfg.baseUrl)
+    && path.includes('/v1/task/submit')
+    && /seedance/i.test(cfg.model);
 
   // 判断是否为 Gemini 格式 API（contents 数组）
-  const isGeminiApi = path.includes('gemini');
-  const isGoogleGeminiApi = /google-api|\/api\/google|generativelanguage\.googleapis\.com/i.test(cfg.baseUrl);
+  const isGeminiApi = /gemini/i.test(path) || /gemini/i.test(cfg.model);
+  const isGoogleGeminiApi = /google-api|generativelanguage\.googleapis\.com/i.test(cfg.baseUrl);
+  const isJdGeminiApi = /joybuilder/i.test(cfg.model)
+    && /\/images\/gemini_flash\/generations/i.test(path);
 
   let body: Record<string, unknown>;
 
   if (isGeminiApi) {
-    // Gemini API 格式: { model, contents: [{role:"user", parts:[{text:"..."}, {inline_data:{...}}]}] }
+    // Gemini API 格式: { model, contents: [{role:"user", parts:[{text:"..."}, {inlineData:{...}}]}] }
     const parts: Array<Record<string, unknown>> = [];
-    // 图生图模式：先放图片，再放文本描述（Gemini需要图在前文在后）
+    // 图生图模式：保留参考图；JD 网关使用 inlineData/mimeType，
+    // Google 兼容接口继续沿用现有 inline_data/mime_type 格式。
     if (payload.imageMode === 'image2image' && payload.referenceImages.length > 0) {
       for (const img of payload.referenceImages) {
         if (!img) continue;
-        parts.push({ inline_data: await toGeminiInlineData(img) });
+        if (isJdGeminiApi) {
+          parts.push({ inlineData: await toJdGeminiInlineData(img) });
+        } else {
+          parts.push({ inline_data: await toGeminiInlineData(img) });
+        }
       }
     }
     parts.push({ text: payload.prompt });
@@ -525,16 +590,21 @@ export const submitGenerateTask = async (
         });
       }
 
-      // Seedance 顶级参数
       body = {
         model: cfg.model,
         content,
-        generate_audio: /seedance-1-5-pro/i.test(cfg.model),
-        duration: payload.durationSec || 5,
-        ratio: payload.videoMode === 'text2video' ? (payload.ratio || '16:9') : 'adaptive',
-        resolution: payload.resolution || '720p',
-        watermark: false,
       };
+      // JD 任务网关使用最小协议 { model, content }。
+      // 火山 Ark 直连继续传递时长、比例和分辨率等规格参数。
+      if (!isJdSeedanceTaskApi) {
+        Object.assign(body, {
+          generate_audio: /seedance-1-5-pro/i.test(cfg.model),
+          duration: payload.durationSec || 5,
+          ratio: payload.videoMode === 'text2video' ? (payload.ratio || '16:9') : 'adaptive',
+          resolution: payload.resolution || '720p',
+          watermark: false,
+        });
+      }
     } else {
       // 非 seedance 的 Ark API（如豆包图片生成等）
       if (isVideo) {
@@ -724,7 +794,7 @@ export const submitGenerateTask = async (
     url,
     {
       method: 'POST',
-      headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+      headers: !isGoogleGeminiApi && cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
       body: JSON.stringify(body),
     },
     timeout

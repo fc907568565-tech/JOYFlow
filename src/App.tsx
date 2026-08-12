@@ -6,11 +6,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Trash2, Eye, FileVideo,Image as ImageIcon,
-  Sparkles, Languages, Upload, FileJson, Wand2, Package, Images, BookOpen, ArrowLeftRight, Gift,
+  Sparkles, Upload, FileJson, Package, Images, BookOpen, ArrowLeftRight, Gift, PanelsTopLeft,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Lottie from 'lottie-react';
 import { parseGIF, decompressFrames } from 'gifuct-js';
+import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 
 import { translations } from './i18n';
 import type {
@@ -26,13 +27,16 @@ import { PreviewStage, type PreviewStageHandle } from './components/PreviewStage
 import { LayerPanel } from './components/LayerPanel';
 import { BottomPanel } from './components/BottomPanel';
 import { ControlPanel } from './components/ControlPanel';
-import { AIStudio } from './components/AIStudio';
 import { AssetLibrary } from './components/AssetLibrary';
 import { JoyBridgePanel, type JoyState } from './components/JoyBridgePanel';
 import { AtlasWorkspace } from './components/AtlasWorkspace';
 import { SpecialtyWorkspace } from './components/SpecialtyWorkspace';
+import { PopupWorkspace } from './components/PopupWorkspace';
+import { HomePage } from './components/HomePage';
 import type { LibraryAsset } from './utils/assetLibrary';
 import { loadActiveAtlasProject, patchActiveAtlasProject } from './utils/atlasWorkflow';
+import { loadActivePopupProject, patchActivePopupProject } from './utils/popupWorkflow';
+import { initializeVisitorWorkspace } from './utils/visitorWorkspace';
 
 export default function App() {
   // ===== i18n =====
@@ -41,10 +45,8 @@ export default function App() {
 
   // ===== Top-level mode =====
   const [activeMode, setActiveMode] = useState<Mode>(() => {
-    const saved = localStorage.getItem('lottiekey_active_workspace');
-    return saved === 'video' || saved === 'sequence' || saved === 'gif' || saved === 'ai' || saved === 'atlas' || saved === 'specialty'
-      ? saved
-      : 'ai';
+    initializeVisitorWorkspace();
+    return 'home';
   });
   const [lastFormatMode, setLastFormatMode] = useState<'video' | 'sequence' | 'gif'>(() => {
     const saved = localStorage.getItem('lottiekey_active_workspace');
@@ -111,30 +113,64 @@ export default function App() {
   const [joyBridgeOpen, setJoyBridgeOpen] = useState(false);
   const [workflowBackground, setWorkflowBackground] = useState<LibraryAsset | null>(null);
   const [workflowProjectId, setWorkflowProjectId] = useState<string | null>(null);
+  const [workflowOwner, setWorkflowOwner] = useState<'atlas' | 'popup' | null>(null);
   const [workflowJoyState, setWorkflowJoyState] = useState<JoyState | null>(() =>
     (loadActiveAtlasProject()?.joyState as JoyState | undefined) || null
   );
   const [atlasRevision, setAtlasRevision] = useState(0);
+  const [popupRevision, setPopupRevision] = useState(0);
   const joyStateSaveTimerRef = useRef<number | null>(null);
+  const recentAtlasProject = useMemo(
+    () => loadActiveAtlasProject(),
+    [activeMode, atlasRevision]
+  );
 
   const handleWorkflowJoyStateChange = (state: JoyState) => {
     if (!workflowProjectId) return;
     setWorkflowJoyState(state);
     if (joyStateSaveTimerRef.current) window.clearTimeout(joyStateSaveTimerRef.current);
     joyStateSaveTimerRef.current = window.setTimeout(() => {
-      const activeProject = loadActiveAtlasProject();
-      if (activeProject?.id === workflowProjectId) {
+      if (workflowOwner === 'popup') {
+        const popupProject = loadActivePopupProject();
+        if (popupProject?.id === workflowProjectId) {
+          patchActivePopupProject({ joyState: state as Record<string, unknown> });
+        }
+        return;
+      }
+      const atlasProject = loadActiveAtlasProject();
+      if (atlasProject?.id === workflowProjectId) {
         patchActiveAtlasProject({ joyState: state as Record<string, unknown> });
       }
     }, 220);
   };
 
   const acceptWorkflowResult = (asset: LibraryAsset, destination: 'static' | 'dynamic' = 'static') => {
+    if (workflowOwner === 'popup') {
+      const popupProject = loadActivePopupProject();
+      if (!popupProject || popupProject.id !== workflowProjectId) return;
+      patchActivePopupProject({
+        selectedCompositeId: asset.id,
+        selectedSubjectId: undefined,
+        selectedCutoutId: undefined,
+        selectedMotionId: undefined,
+        motionInputId: undefined,
+        joyState: (workflowJoyState || asset.joyState || {}) as Record<string, unknown>,
+        currentStage: 'cutout',
+      });
+      setPopupRevision((value) => value + 1);
+      setJoyBridgeOpen(false);
+      setActiveMode('popup');
+      return;
+    }
     const activeProject = loadActiveAtlasProject();
     if (!activeProject || activeProject.id !== workflowProjectId) return;
     const makeDynamic = destination === 'dynamic';
     patchActiveAtlasProject({
       selectedCompositeId: asset.id,
+      selectedPostProcessedId: undefined,
+      selectedVideoId: undefined,
+      postProcessSettings: undefined,
+      postProcessCompleted: false,
       joyState: (workflowJoyState || asset.joyState || {}) as Record<string, unknown>,
       dynamicEnabled: makeDynamic ? true : activeProject.dynamicEnabled,
       currentStage: makeDynamic ? 'dynamic' : 'static',
@@ -158,7 +194,6 @@ export default function App() {
   // ===== Refs =====
   const processCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewStageRef = useRef<PreviewStageHandle>(null);
-  const lottieInputRef = useRef<HTMLInputElement>(null);
 
   // ===== Cleanup object URLs =====
   useEffect(() => {
@@ -240,27 +275,6 @@ export default function App() {
     e.target.value = '';
   };
 
-  const handleLottiePreviewUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const json = JSON.parse(text);
-      if (!json || typeof json !== 'object' || !Array.isArray(json.layers)) {
-        throw new Error('Invalid Lottie JSON');
-      }
-      setLastLottieData(json);
-      setStatus('IDLE');
-      setProgress(0);
-      setIsProcessing(false);
-    } catch (err) {
-      console.error(err);
-      alert(lang === 'zh' ? 'Lottie 文件解析失败，请确认是有效的 JSON 动画文件。' : 'Failed to parse Lottie file. Please choose a valid JSON animation.');
-    } finally {
-      e.target.value = '';
-    }
-  };
-
   const openAssetLibrary = () => {
     setLibraryMode('asset');
     setLibraryOpen(true);
@@ -269,6 +283,14 @@ export default function App() {
   const openSourceLibrary = () => {
     setLibraryMode('source');
     setLibraryOpen(true);
+  };
+
+  const openStandaloneJoy = () => {
+    setWorkflowBackground(null);
+    setWorkflowProjectId(null);
+    setWorkflowJoyState(null);
+    setWorkflowOwner(null);
+    setJoyBridgeOpen(true);
   };
 
   // ===== Asset upload (PNG/JPEG/WEBP) =====
@@ -427,6 +449,52 @@ export default function App() {
       alert('素材加载失败，可能是图片链接已过期。');
     };
     img.src = libAsset.url;
+  };
+
+  const openSpecialtyVideoExport = (videoAsset: LibraryAsset) => {
+    setExportFormat('LOTTIE');
+    setLastFormatMode('video');
+    setChromaKey({
+      enabled: true,
+      color: '#00ff00',
+      threshold: 120,
+      similarity: 0.15,
+      despill: 0.3,
+    });
+    setCustomCanvasEnabled(true);
+    setTargetWidthInput(700);
+    setTargetHeightInput(700);
+    setContentScale(1);
+    setOffsetX(0);
+    setOffsetY(0);
+    setScale(1);
+    setFrameSkip(2);
+    setQuality(0.8);
+    setOpen((current) => ({ ...current, src: true, chroma: true, canvas: true, optim: true }));
+    onSelectFromLibrary(videoAsset);
+  };
+
+  const openPopupVideoExport = (videoAsset: LibraryAsset, backgroundColor: string) => {
+    setExportFormat('LOTTIE');
+    setLastFormatMode('video');
+    setChromaKey({
+      enabled: true,
+      color: backgroundColor || '#ff4fd8',
+      threshold: 120,
+      similarity: 0.15,
+      despill: 0.3,
+    });
+    setCustomCanvasEnabled(true);
+    setTargetWidthInput(720);
+    setTargetHeightInput(900);
+    setContentScale(1);
+    setOffsetX(0);
+    setOffsetY(0);
+    setScale(1);
+    setFrameSkip(2);
+    setQuality(0.8);
+    setOpen((current) => ({ ...current, src: true, chroma: true, canvas: true, optim: true }));
+    onSelectFromLibrary(videoAsset);
   };
 
   // 清理被删除素材的 image 缓存
@@ -656,8 +724,11 @@ export default function App() {
       const sctx = sc.getContext('2d')!;
       const frames: ProcessedFrame[] = [];
       const fps = 30;
-      const total = Math.floor((v.duration * fps) / frameSkip);
+      const total = Math.max(1, Math.ceil((v.duration * fps) / frameSkip));
       const targetFps = fps / frameSkip;
+      const gifEncoder = exportFormat === 'GIF' ? GIFEncoder() : null;
+      const gifDelay = Math.max(20, Math.round(1000 / targetFps));
+      const gifColorCount = quality >= 0.8 ? 256 : quality >= 0.55 ? 128 : quality >= 0.3 ? 64 : 32;
       let recorder: MediaRecorder | null = null;
       const chunks: Blob[] = [];
       if (exportFormat === 'MP4') {
@@ -672,9 +743,8 @@ export default function App() {
       for (let i = 0; i < total; i++) {
         const time = (i * frameSkip) / fps;
         if (time > v.duration) break;
-        v.currentTime = time;
         await new Promise<void>((resolve) => {
-          const onSeeked = () => {
+          const renderFrame = () => {
             sctx.clearRect(0, 0, srcW, srcH);
             sctx.drawImage(v, 0, 0, srcW, srcH);
             if (chromaKey.enabled) applyChromaKey(sctx, srcW, srcH, chromaKey);
@@ -688,12 +758,40 @@ export default function App() {
             } else {
               ctx.drawImage(sc, 0, 0, outW, outH);
             }
-            // MP4 模式直接烧录素材；Lottie 模式素材作为独立图层导出
-            if (exportFormat === 'MP4' && assets.length > 0) {
+            // 视频与 GIF 直接合成素材；Lottie 保留为独立图层。
+            if (exportFormat !== 'LOTTIE' && assets.length > 0) {
               drawAssetsAt(ctx, time, outW, outH, v.videoWidth, v.videoHeight);
             }
             if (exportFormat === 'LOTTIE') {
               frames.push({ id: `f_${i}`, data: canvas.toDataURL('image/webp', quality) });
+            } else if (exportFormat === 'GIF' && gifEncoder) {
+              const rgba = ctx.getImageData(0, 0, outW, outH).data;
+              let hasTransparency = false;
+              for (let alphaIndex = 3; alphaIndex < rgba.length; alphaIndex += 4) {
+                if (rgba[alphaIndex] < 128) {
+                  hasTransparency = true;
+                  break;
+                }
+              }
+              const paletteFormat = hasTransparency ? 'rgba4444' : 'rgb565';
+              const palette = quantize(rgba, gifColorCount, hasTransparency ? {
+                format: 'rgba4444',
+                oneBitAlpha: 96,
+                clearAlpha: true,
+                clearAlphaThreshold: 96,
+              } : { format: 'rgb565' });
+              const indexed = applyPalette(rgba, palette, paletteFormat);
+              const transparentIndex = hasTransparency
+                ? palette.findIndex((color) => color.length > 3 && color[3] === 0)
+                : -1;
+              gifEncoder.writeFrame(indexed, outW, outH, {
+                palette,
+                delay: gifDelay,
+                repeat: 0,
+                transparent: transparentIndex >= 0,
+                transparentIndex: Math.max(0, transparentIndex),
+                dispose: transparentIndex >= 0 ? 2 : -1,
+              });
             } else if (recorder) {
               const tracks = (recorder.stream as MediaStream).getVideoTracks();
               if (tracks[0] && 'requestFrame' in tracks[0]) {
@@ -702,12 +800,18 @@ export default function App() {
               }
             }
             setProgress(Math.round(((i + 1) / total) * 100));
-            v.removeEventListener('seeked', onSeeked);
             resolve();
           };
-          v.addEventListener('seeked', onSeeked);
+          if (Math.abs(v.currentTime - time) < 0.001 && v.readyState >= 2) {
+            renderFrame();
+            return;
+          }
+          const onSeeked = () => renderFrame();
+          v.addEventListener('seeked', onSeeked, { once: true });
+          v.currentTime = Math.min(time, Math.max(0, v.duration - 0.001));
         });
         if (exportFormat === 'MP4') await new Promise((r) => setTimeout(r, 20));
+        if (exportFormat === 'GIF') await new Promise((r) => setTimeout(r, 0));
       }
       if (exportFormat === 'MP4' && recorder) {
         recorder.stop();
@@ -724,6 +828,17 @@ export default function App() {
             resolve();
           };
         });
+      } else if (exportFormat === 'GIF' && gifEncoder) {
+        gifEncoder.finish();
+        const blob = new Blob([gifEncoder.bytes()], { type: 'image/gif' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        const baseName = videoFile.name.replace(/\.[^.]+$/, '').replace(/[^\w\-\u4e00-\u9fa5]+/g, '_') || 'joyflow_video';
+        anchor.href = url;
+        anchor.download = `${baseName}_${Date.now()}.gif`;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setLastLottieData(null);
       } else {
         // 预览中 canvas 的像素尺寸：裁切模式=targetW/H，非裁切=原始视频尺寸
         const previewW = customCanvasEnabled ? targetWidth : v.videoWidth;
@@ -795,7 +910,12 @@ export default function App() {
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col">
       <header className="flex items-center justify-between px-6 h-14 border-b border-[var(--border-soft)] bg-[var(--bg-elev)]/60 backdrop-blur-md shrink-0">
-        <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => { setActiveMode('home'); setStatus('IDLE'); }}
+          className="flex items-center gap-3 rounded-xl text-left transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--primary)]"
+          aria-label="返回 JOYFlow 首页"
+        >
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center shadow-lg shadow-blue-900/30">
             <Sparkles className="text-white" size={18} />
           </div>
@@ -803,27 +923,34 @@ export default function App() {
             <h1 className="text-base font-bold tracking-tight leading-none">{t.title}</h1>
             <p className="text-[10px] text-neutral-500 font-mono mt-0.5">{t.subtitle}</p>
           </div>
-        </div>
+        </button>
         <div className="topbar-glass-group flex items-center p-0.5">
-          <button
-            onClick={() => { setActiveMode('ai'); setStatus('IDLE'); }}
-            className={`topbar-glass-button ${
-              activeMode === 'ai' ? 'is-active' : ''
-            }`}
-          >
-            <Wand2 size={14} /> {lang === 'zh' ? '资产生成' : 'Asset Studio'}
-          </button>
           <button
             onClick={() => { setActiveMode('atlas'); setStatus('IDLE'); }}
             className={`topbar-glass-button ${activeMode === 'atlas' ? 'is-active' : ''}`}
           >
-            <BookOpen size={14} /> {lang === 'zh' ? '图鉴生产' : 'Atlas Workflow'}
+            <BookOpen size={14} /> 角色海报
           </button>
           <button
             onClick={() => { setActiveMode('specialty'); setStatus('IDLE'); }}
             className={`topbar-glass-button ${activeMode === 'specialty' ? 'is-active' : ''}`}
           >
-            <Gift size={14} /> {lang === 'zh' ? '特产道具' : 'Specialty Props'}
+            <Gift size={14} /> 道具元素
+          </button>
+          <button
+            onClick={() => { setActiveMode('popup'); setStatus('IDLE'); }}
+            className={`topbar-glass-button ${activeMode === 'popup' ? 'is-active' : ''}`}
+          >
+            <PanelsTopLeft size={14} /> 动态弹窗
+          </button>
+        </div>
+        <div className="topbar-glass-group flex items-center p-0.5">
+          <button
+            onClick={openStandaloneJoy}
+            className={`topbar-glass-button ${joyBridgeOpen ? 'is-active' : ''}`}
+          >
+            <Package size={14} /> JOY 控制
+            <span className="rounded bg-white/8 px-1.5 py-0.5 text-[9px] font-medium text-neutral-400">内网</span>
           </button>
           <button
             onClick={() => { setActiveMode(lastFormatMode); setStatus('IDLE'); }}
@@ -831,34 +958,32 @@ export default function App() {
               activeMode === 'video' || activeMode === 'sequence' || activeMode === 'gif' ? 'is-active' : ''
             }`}
           >
-            <ArrowLeftRight size={14} /> {lang === 'zh' ? '转格式工具' : 'Format Tools'}
+            <ArrowLeftRight size={14} /> 转格式工具
           </button>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => { setWorkflowBackground(null); setWorkflowProjectId(null); setWorkflowJoyState(null); setJoyBridgeOpen(true); }} className="topbar-action-button" title="JOY 3D Controller POC">
+          <button onClick={openAssetLibrary} className={`topbar-glass-button ${libraryOpen ? 'is-active' : ''}`} title="素材仓库">
             <Package size={14} />
-            JOY 控制
-          </button>
-          <button onClick={() => lottieInputRef.current?.click()} className="topbar-action-button" title={lang === 'zh' ? '预览 Lottie JSON' : 'Preview Lottie JSON'}>
-            <FileJson size={14} />
-            {lang === 'zh' ? 'Lottie 预览' : 'Lottie Preview'}
-          </button>
-          <button onClick={openAssetLibrary} className="topbar-action-button" title="素材仓库">
-            <Package size={14} />
-            {lang === 'zh' ? '仓库' : 'Library'}
-          </button>
-          <button onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')} className="topbar-action-button">
-            <Languages size={14} />
-            {t.languageBtn}
+            仓库
           </button>
         </div>
       </header>
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        {/* AI模式 - 始终挂载，通过display控制显隐以保留状态 */}
-        <div className={`flex-1 flex flex-col overflow-hidden ${activeMode === 'ai' ? '' : 'hidden'}`}>
-          <AIStudio />
-        </div>
+        {activeMode === 'home' && (
+          <HomePage
+            recentProject={recentAtlasProject ? {
+              name: recentAtlasProject.name,
+              currentStage: recentAtlasProject.currentStage,
+              updatedAt: recentAtlasProject.updatedAt,
+              outputRatio: recentAtlasProject.outputRatio,
+            } : null}
+            onOpenAtlas={() => { setActiveMode('atlas'); setStatus('IDLE'); }}
+            onOpenSpecialty={() => { setActiveMode('specialty'); setStatus('IDLE'); }}
+            onOpenPopup={() => { setActiveMode('popup'); setStatus('IDLE'); }}
+            onOpenJoy={openStandaloneJoy}
+            onOpenFormats={() => { setActiveMode(lastFormatMode); setStatus('IDLE'); }}
+            onOpenLibrary={openAssetLibrary}
+          />
+        )}
 
         <div className={`flex-1 flex flex-col overflow-hidden ${activeMode === 'atlas' ? '' : 'hidden'}`}>
           <AtlasWorkspace
@@ -867,17 +992,34 @@ export default function App() {
               setWorkflowBackground(asset);
               setWorkflowProjectId(projectId);
               setWorkflowJoyState(joyState as JoyState | null);
+              setWorkflowOwner('atlas');
               setJoyBridgeOpen(true);
             }}
           />
         </div>
 
         <div className={`flex-1 flex flex-col overflow-hidden ${activeMode === 'specialty' ? '' : 'hidden'}`}>
-          <SpecialtyWorkspace />
+          <SpecialtyWorkspace onOpenVideoExport={openSpecialtyVideoExport} />
+        </div>
+
+        <div className={`flex-1 flex flex-col overflow-hidden ${activeMode === 'popup' ? '' : 'hidden'}`}>
+          <PopupWorkspace
+            revision={popupRevision}
+            onEnterJoy={(asset, joyState, projectId) => {
+              setWorkflowBackground(asset);
+              setWorkflowProjectId(projectId);
+              setWorkflowJoyState(joyState);
+              setWorkflowOwner('popup');
+              setJoyBridgeOpen(true);
+            }}
+            onOpenVideoExport={openPopupVideoExport}
+          />
         </div>
 
         {/* 视频/GIF模式 */}
-        <div className={`flex-1 flex flex-col overflow-hidden ${activeMode !== 'ai' && activeMode !== 'atlas' && activeMode !== 'specialty' ? '' : 'hidden'}`}>
+        <div className={`flex-1 flex flex-col overflow-hidden ${
+          activeMode === 'video' || activeMode === 'sequence' || activeMode === 'gif' ? '' : 'hidden'
+        }`}>
         <div className="format-tool-tabs-bar shrink-0">
           <div className="flex items-center gap-2 text-xs font-semibold text-neutral-300">
             <ArrowLeftRight size={14} className="text-[var(--primary)]" />
@@ -1086,13 +1228,6 @@ export default function App() {
       </main>
 
       <canvas ref={processCanvasRef} className="hidden" />
-      <input
-        ref={lottieInputRef}
-        type="file"
-        accept="application/json,.json,.lottie"
-        className="hidden"
-        onChange={handleLottiePreviewUpload}
-      />
       <AssetLibrary
         open={libraryOpen}
         onClose={() => setLibraryOpen(false)}

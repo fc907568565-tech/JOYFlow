@@ -1,5 +1,9 @@
-export type AtlasStage = 'setup' | 'scene' | 'joy' | 'static' | 'dynamic' | 'export';
+import type { PosterPostProcessSettings } from './posterPostProcess';
+
+export type AtlasStage = 'setup' | 'scene' | 'joy' | 'static' | 'post' | 'dynamic' | 'export';
 export type AtlasSceneStrategy = 'local' | 'recompose' | 'landmark';
+export type AtlasSceneSourceMode = 'reference' | 'prompt';
+export type AtlasSceneAnalysisSource = 'ai' | 'fallback';
 
 export interface AtlasCropRect {
   x: number;
@@ -20,16 +24,24 @@ export interface AtlasProject {
   createdAt: number;
   updatedAt: number;
   currentStage: AtlasStage;
+  sceneSourceMode?: AtlasSceneSourceMode;
+  sceneConcept?: string;
   locationName?: string;
   sceneDescription?: string;
   sceneDescriptionOptions?: string[];
+  sceneAnalysisSource?: AtlasSceneAnalysisSource;
+  sceneAnalysisModel?: string;
+  sceneAnalysisError?: string;
   sceneStrategy?: AtlasSceneStrategy;
   sceneCrop?: AtlasCropRect;
   sceneCamera?: AtlasCameraView;
   sceneReferenceId?: string;
   selectedSceneId?: string;
   selectedCompositeId?: string;
+  selectedPostProcessedId?: string;
   selectedVideoId?: string;
+  postProcessSettings?: PosterPostProcessSettings;
+  postProcessCompleted?: boolean;
   joyState?: Record<string, unknown>;
   outputRatio: string;
   outputWidth: number;
@@ -88,21 +100,31 @@ export const createAtlasProject = (input: {
   outputWidth: number;
   outputHeight: number;
   dynamicEnabled: boolean;
+  sceneSourceMode?: AtlasSceneSourceMode;
+  sceneConcept?: string;
   locationName?: string;
   sceneDescription?: string;
   sceneDescriptionOptions?: string[];
+  sceneAnalysisSource?: AtlasSceneAnalysisSource;
+  sceneAnalysisModel?: string;
+  sceneAnalysisError?: string;
   sceneStrategy?: AtlasSceneStrategy;
   sceneCrop?: AtlasCropRect;
   sceneCamera?: AtlasCameraView;
 }): AtlasProject => saveActiveAtlasProject({
   id: `atlas_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-  name: input.name.trim() || `图鉴任务 ${new Date().toLocaleDateString()}`,
+  name: input.name.trim() || `角色海报任务 ${new Date().toLocaleDateString()}`,
   createdAt: Date.now(),
   updatedAt: Date.now(),
   currentStage: 'scene',
+  sceneSourceMode: input.sceneSourceMode,
+  sceneConcept: input.sceneConcept?.trim(),
   locationName: input.locationName?.trim(),
   sceneDescription: input.sceneDescription?.trim(),
   sceneDescriptionOptions: input.sceneDescriptionOptions,
+  sceneAnalysisSource: input.sceneAnalysisSource,
+  sceneAnalysisModel: input.sceneAnalysisModel,
+  sceneAnalysisError: input.sceneAnalysisError,
   sceneStrategy: input.sceneStrategy,
   sceneCrop: input.sceneCrop,
   sceneCamera: input.sceneCamera,

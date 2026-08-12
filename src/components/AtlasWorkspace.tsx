@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, BookOpen, Camera, Check, Crop, Download, Film, History, Image as ImageIcon, LoaderCircle, MapPin, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Camera, Check, Crop, Download, Film, History, Image as ImageIcon, LoaderCircle, MapPin, RotateCcw, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { AIStudio } from './AIStudio';
+import { PosterPostProcessStage } from './PosterPostProcessStage';
 import { addToLibrary, loadLibrary, type LibraryAsset } from '../utils/assetLibrary';
 import { BUILT_IN_PRESETS } from '../ai/presets';
 import {
   describeAtlasSceneOptions,
+  describeAtlasTextSceneOptions,
+  GPT55_PROMPT_AGENT_CONFIG,
   loadPromptAgentConfig,
   savePromptAgentConfig,
 } from '../ai/promptAgent';
@@ -18,9 +21,11 @@ import {
   type AtlasProject,
   type AtlasCameraView,
   type AtlasCropRect,
+  type AtlasSceneSourceMode,
   type AtlasSceneStrategy,
   type AtlasStage,
 } from '../utils/atlasWorkflow';
+import type { PosterPostProcessSettings } from '../utils/posterPostProcess';
 
 interface AtlasWorkspaceProps {
   revision?: number;
@@ -28,10 +33,12 @@ interface AtlasWorkspaceProps {
 }
 
 const STEPS: Array<{ id: AtlasStage; label: string }> = [
+  { id: 'setup', label: '初始设置' },
   { id: 'scene', label: '场景生成' },
-  { id: 'joy', label: 'JOY 编排' },
-  { id: 'static', label: '静态图鉴' },
-  { id: 'dynamic', label: '动态图鉴' },
+  { id: 'joy', label: '角色植入' },
+  { id: 'static', label: '静态海报' },
+  { id: 'post', label: '海报后期' },
+  { id: 'dynamic', label: '动态海报' },
   { id: 'export', label: '导出' },
 ];
 
@@ -41,6 +48,14 @@ const RATIO_SIZES: Record<string, [number, number]> = {
   '1:1': [1024, 1024],
   '3:4': [834, 1112],
   '9:16': [720, 1280],
+};
+
+const SCENE_GENERATION_SIZES: Record<string, [number, number]> = {
+  '16:9': [1536, 1024],
+  '4:3': [1024, 768],
+  '1:1': [1024, 1024],
+  '3:4': [768, 1024],
+  '9:16': [1024, 1536],
 };
 
 const DYNAMIC_RATIO_SIZES: Record<string, [number, number]> = {
@@ -146,27 +161,53 @@ const describeCameraViewCompact = (camera: AtlasCameraView) => {
   return `${rotation} · ${tilt} · ${zoom}`;
 };
 
-const buildAtlasPromptTemplate = (locationName: string, camera: AtlasCameraView = DEFAULT_CAMERA) => ({
-  prefix: `生成一张卡通游戏海报，场景为【${locationName}】。第1张图片是完整场景参考，是场景身份、建筑结构、景物关系和空间布局的最高优先级依据；结果必须明确表现同一个地点。目标摄像机视角为：${describeCameraView(camera)}。请依据该参数推演同一场景的新机位画面，而不是复刻原照片构图。允许在原拍摄位置附近前移、侧移或转动镜头，但不得改造建筑、移动或替换景物、交换空间关系、加入新地标，或重新组合成另一个场景。未展示区域只做符合原结构的保守延伸。第2、3张图片只用于参考3D卡通拟物的视觉风格，不参考其中的场景内容、人物、文字和构图。3D哑光质感，C4D，blender，Q萌，圆润，简洁造型，色彩清新，高饱和度，细腻材质，柔和自然光影。具体取景为：`,
-  suffix: '。严格保留原参考照片的场景辨识度、建筑特征和景物空间关系。以场景本身的美感、视觉重心、构图节奏和层次完整为最高优先，不要为了后续角色刻意制造大片空地或留白。高清简洁，色彩搭配高级简约。不要出现文字、Logo或水印。比例3:4',
-});
+const buildAtlasPromptTemplate = (
+  locationName: string,
+  camera: AtlasCameraView = DEFAULT_CAMERA,
+  ratio = '3:4',
+  sourceMode: AtlasSceneSourceMode = 'reference',
+  sceneConcept = '',
+) => {
+  const locationNote = locationName.trim();
+  return sourceMode === 'prompt'
+    ? {
+    prefix: `生成一张卡通游戏海报。用户的核心场景设想是【${sceneConcept.trim() || locationName || '创意场景'}】${locationName ? `，场景名称或地点为【${locationName}】` : ''}。第1、2张图片只用于参考3D卡通拟物的视觉风格，不参考其中的场景内容、人物、文字和构图。3D哑光质感，C4D，blender，Q萌，圆润，简洁造型，色彩清新，高饱和度，细腻材质，柔和自然光影。用户选定的具体画面方案为：`,
+    suffix: `。忠实呈现用户描述的核心主体、氛围和空间关系，允许补充合理的环境细节，但不得加入无关地标、品牌、人物或文字。以场景本身的美感、视觉重心、构图节奏和层次完整为最高优先，不要为了后续角色刻意制造大片空地或留白。高清简洁，色彩搭配高级简约。不要出现文字、Logo或水印。画面比例${ratio}`,
+    }
+    : {
+      prefix: `生成一张卡通游戏角色海报。第1张图片是完整场景参考，是场景身份、建筑结构、景物关系和空间布局的最高优先级依据；结果必须明确表现同一个场景。${locationNote ? `用户补充的场景备注为【${locationNote}】，备注仅用于辅助理解，若与图片内容冲突必须以图片为准。` : '用户没有填写场景备注，请完全依据参考图片理解场景，不要猜测或补充具体地名。'}目标摄像机视角为：${describeCameraView(camera)}。请依据该参数推演同一场景的新机位画面，而不是复刻原照片构图。允许在原拍摄位置附近前移、侧移或转动镜头，但不得改造建筑、移动或替换景物、交换空间关系、加入新地标，或重新组合成另一个场景。未展示区域只做符合原结构的保守延伸。第2、3张图片只用于参考3D卡通拟物的视觉风格，不参考其中的场景内容、人物、文字和构图。3D哑光质感，C4D，blender，Q萌，圆润，简洁造型，色彩清新，高饱和度，细腻材质，柔和自然光影。具体取景为：`,
+      suffix: `。严格保留原参考照片的场景辨识度、建筑特征和景物空间关系。以场景本身的美感、视觉重心、构图节奏和层次完整为最高优先，不要为了后续角色刻意制造大片空地或留白。高清简洁，色彩搭配高级简约。不要出现文字、Logo或水印。画面比例${ratio}`,
+    };
+};
 
 const buildFallbackSceneOptions = (
   locationName: string,
   strategy: AtlasSceneStrategy,
   camera: AtlasCameraView,
 ) => {
-  const location = locationName.trim() || '参考场景';
+  const location = locationName.trim() || '参考图片中的场景';
   const view = describeCameraViewCompact(camera);
   const strategyText = strategy === 'recompose'
     ? '从原拍摄点附近轻微侧移'
     : strategy === 'landmark'
       ? '靠近最具辨识度的主体'
       : '基本保持原照片方向并适度推进';
+  const sideView = camera.rotation <= 0 ? '从右前方小幅侧移的中景' : '从左前方小幅侧移的中景';
+  const heightView = camera.tilt <= 0 ? '略升高机位俯视的广角取景' : '略降低机位观察的近景';
   return [
     `以${location}的主要建筑或地标为主体，${strategyText}，采用${view}，保留真实前中后景关系与自然光线，视觉重心落在场景最具辨识度的位置。`,
-    `完整呈现${location}的主体轮廓，前景承接原有道路或自然景物，中景突出建筑空间，远景保留环境层次，采用${view}，构图清晰舒展。`,
-    `围绕${location}建立层次分明的取景，严格沿用参考图中的建筑、树木和道路关系，使用${view}，以主体和周围环境的呼应作为视觉重点。`,
+    `采用${sideView}观察${location}，将主体放在画面侧部，前景承接原有道路或自然景物形成引导，中景突出主体空间，远景保留环境层次。`,
+    `采用${heightView}呈现${location}，主体落点与前两个方案错开，严格沿用参考图中的建筑、树木和道路关系，以前中后景的纵深呼应作为视觉重点。`,
+  ];
+};
+
+const buildFallbackTextSceneOptions = (sceneConcept: string, locationName: string) => {
+  const concept = sceneConcept.trim().replace(/\s+/g, ' ').slice(0, 90);
+  const location = locationName.trim() ? `，围绕${locationName.trim()}` : '';
+  return [
+    `以“${concept}”为核心${location}，采用平视中广角建立完整环境，主体位于画面视觉中心，前景作为轻微引导，中景承载主要空间，远景交代环境与自然光线。`,
+    `保留“${concept}”的核心氛围${location}，改用侧向低机位中景，主体落在画面一侧，利用近处物件形成前景纵深，中远景逐步展开，光线突出空间层次。`,
+    `围绕“${concept}”重新组织画面${location}，采用略高机位的开阔景别，主体与环境形成对角关系，前中后景清楚分层，让整体氛围和视觉节奏更舒展。`,
   ];
 };
 
@@ -175,8 +216,11 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
   const [projectName, setProjectName] = useState('');
   const [ratio, setRatio] = useState('3:4');
   const [dynamicEnabled, setDynamicEnabled] = useState(true);
+  const [sceneSourceMode, setSceneSourceMode] = useState<AtlasSceneSourceMode>('reference');
+  const [sceneConcept, setSceneConcept] = useState('');
   const [locationName, setLocationName] = useState('');
   const [sceneReferenceDataUrl, setSceneReferenceDataUrl] = useState('');
+  const [sceneReferenceDragging, setSceneReferenceDragging] = useState(false);
   const [sceneCrop, setSceneCrop] = useState<AtlasCropRect>(DEFAULT_CROP);
   const [sceneCamera, setSceneCamera] = useState<AtlasCameraView>(DEFAULT_CAMERA);
   const [sceneAgentConfig, setSceneAgentConfig] = useState(() => loadPromptAgentConfig());
@@ -188,6 +232,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
   const [sceneReferenceAsset, setSceneReferenceAsset] = useState<LibraryAsset | null>(null);
   const [sceneAsset, setSceneAsset] = useState<LibraryAsset | null>(null);
   const [compositeAsset, setCompositeAsset] = useState<LibraryAsset | null>(null);
+  const [postProcessedAsset, setPostProcessedAsset] = useState<LibraryAsset | null>(null);
   const [videoAsset, setVideoAsset] = useState<LibraryAsset | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [projectHistory, setProjectHistory] = useState<AtlasProject[]>(() => loadAtlasProjectHistory());
@@ -219,16 +264,21 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
       setCompositeAsset(project.selectedCompositeId
         ? assets.find((asset) => asset.id === project.selectedCompositeId) || null
         : null);
+      setPostProcessedAsset(project.selectedPostProcessedId
+        ? assets.find((asset) => asset.id === project.selectedPostProcessedId) || null
+        : null);
       setVideoAsset(project.selectedVideoId
         ? assets.find((asset) => asset.id === project.selectedVideoId) || null
         : null);
     });
     return () => { cancelled = true; };
-  }, [project?.sceneReferenceId, project?.selectedSceneId, project?.selectedCompositeId, project?.selectedVideoId]);
+  }, [project?.sceneReferenceId, project?.selectedSceneId, project?.selectedCompositeId, project?.selectedPostProcessedId, project?.selectedVideoId]);
 
   useEffect(() => {
     if (!project || project.currentStage !== 'setup') return;
     setProjectName(project.name || '');
+    setSceneSourceMode(project.sceneSourceMode || (project.sceneConcept && !project.sceneReferenceId ? 'prompt' : 'reference'));
+    setSceneConcept(project.sceneConcept || '');
     setLocationName(project.locationName || '');
     setRatio(project.outputRatio || '3:4');
     setDynamicEnabled(project.dynamicEnabled);
@@ -238,36 +288,57 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
   }, [project?.id, project?.currentStage]);
 
   const createProject = async () => {
-    if (!sceneReferenceDataUrl) {
+    const usesReference = sceneSourceMode === 'reference';
+    if (usesReference && !sceneReferenceDataUrl) {
       setPrepareError('请先上传一张场景参考图');
       return;
     }
-    if (!locationName.trim()) {
-      setPrepareError('请输入场景选址地名');
+    if (!usesReference && sceneConcept.trim().length < 6) {
+      setPrepareError('请用至少 6 个字描述想要的场景画面');
       return;
     }
+    const effectiveLocation = usesReference
+      ? locationName.trim()
+      : locationName.trim()
+        || sceneConcept.trim().replace(/[，。！？、,.!?].*$/, '').slice(0, 30)
+        || '创意场景';
     setPreparingScene(true);
     setPrepareError('');
     const [outputWidth, outputHeight] = RATIO_SIZES[ratio] || RATIO_SIZES['1:1'];
     try {
       const seedreamConfig = BUILT_IN_PRESETS.find((preset) => preset.id === '__doubao_seedream__')?.config;
       if (!seedreamConfig) throw new Error('未找到 Seedream 模型配置');
-      const croppedReference = await cropImageDataUrl(sceneReferenceDataUrl, sceneCrop);
       const sceneStrategy = resolveSceneStrategy(sceneCamera);
       let sceneDescriptionOptions: string[];
+      let sceneAnalysisSource: 'ai' | 'fallback' = 'ai';
+      let sceneAnalysisError = '';
       try {
-        if (!sceneAgentConfig.apiKey.trim()) throw new Error('未配置场景分析 API Key');
-        sceneDescriptionOptions = await describeAtlasSceneOptions(
-          sceneAgentConfig,
-          seedreamConfig,
-          croppedReference,
-          locationName,
-          sceneStrategy,
-          sceneCamera,
-        );
+        if (usesReference) {
+          const croppedReference = await cropImageDataUrl(sceneReferenceDataUrl, sceneCrop);
+          sceneDescriptionOptions = await describeAtlasSceneOptions(
+            sceneAgentConfig,
+            seedreamConfig,
+            croppedReference,
+            effectiveLocation,
+            sceneStrategy,
+            sceneCamera,
+          );
+        } else {
+          sceneDescriptionOptions = await describeAtlasTextSceneOptions(
+            sceneAgentConfig,
+            seedreamConfig,
+            sceneConcept,
+            effectiveLocation,
+            ratio,
+          );
+        }
       } catch (analysisError) {
         console.warn('[Atlas] 场景 AI 分析不可用，使用本地基础方案继续：', analysisError);
-        sceneDescriptionOptions = buildFallbackSceneOptions(locationName, sceneStrategy, sceneCamera);
+        sceneAnalysisSource = 'fallback';
+        sceneAnalysisError = analysisError instanceof Error ? analysisError.message : String(analysisError);
+        sceneDescriptionOptions = usesReference
+          ? buildFallbackSceneOptions(effectiveLocation, sceneStrategy, sceneCamera)
+          : buildFallbackTextSceneOptions(sceneConcept, locationName);
       }
       const sceneDescription = sceneDescriptionOptions[0] || '';
       const baseProject = project?.currentStage === 'setup'
@@ -275,19 +346,28 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
           ...project,
           name: projectName.trim() || project.name,
           currentStage: 'scene',
-          locationName: locationName.trim(),
+          sceneSourceMode,
+          sceneConcept: usesReference ? undefined : sceneConcept.trim(),
+          locationName: effectiveLocation,
           sceneDescription,
           sceneDescriptionOptions,
+          sceneAnalysisSource,
+          sceneAnalysisModel: sceneAgentConfig.model.trim(),
+          sceneAnalysisError: sceneAnalysisError || undefined,
           sceneStrategy,
           sceneCrop,
           sceneCamera,
+          sceneReferenceId: usesReference ? project.sceneReferenceId : undefined,
           outputRatio: ratio,
           outputWidth,
           outputHeight,
           dynamicEnabled,
           selectedSceneId: undefined,
           selectedCompositeId: undefined,
+          selectedPostProcessedId: undefined,
           selectedVideoId: undefined,
+          postProcessSettings: undefined,
+          postProcessCompleted: false,
           joyState: undefined,
         })
         : createAtlasProject({
@@ -296,29 +376,40 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
           outputWidth,
           outputHeight,
           dynamicEnabled,
-          locationName,
+          sceneSourceMode,
+          sceneConcept: usesReference ? undefined : sceneConcept,
+          locationName: effectiveLocation,
           sceneDescription,
           sceneDescriptionOptions,
+          sceneAnalysisSource,
+          sceneAnalysisModel: sceneAgentConfig.model.trim(),
+          sceneAnalysisError: sceneAnalysisError || undefined,
           sceneStrategy,
           sceneCrop,
           sceneCamera,
         });
-      const referenceAsset = sceneReferenceAsset?.url === sceneReferenceDataUrl
-        ? sceneReferenceAsset
-        : await addToLibrary({
-          url: sceneReferenceDataUrl,
-          type: 'image',
-          prompt: `${locationName.trim()} 完整场景参考图`,
-          thumbnail: sceneReferenceDataUrl,
-          projectId: baseProject.id,
-          workflowId: baseProject.id,
-          stage: 'reference',
-          selected: true,
-          status: 'approved',
-          tags: ['图鉴场景参考', 'image-to-image', sceneStrategy],
-        });
-      const next = saveActiveAtlasProject({ ...baseProject, sceneReferenceId: referenceAsset.id });
-      setSceneReferenceAsset(referenceAsset);
+      let next = baseProject;
+      if (usesReference) {
+        const referenceAsset = sceneReferenceAsset?.url === sceneReferenceDataUrl
+          ? sceneReferenceAsset
+          : await addToLibrary({
+            url: sceneReferenceDataUrl,
+            type: 'image',
+            prompt: effectiveLocation ? `${effectiveLocation} · 完整场景参考图` : '完整场景参考图',
+            thumbnail: sceneReferenceDataUrl,
+            projectId: baseProject.id,
+            workflowId: baseProject.id,
+            stage: 'reference',
+            selected: true,
+            status: 'approved',
+            tags: ['角色海报场景参考', 'image-to-image', sceneStrategy],
+          });
+        next = saveActiveAtlasProject({ ...baseProject, sceneReferenceId: referenceAsset.id });
+        setSceneReferenceAsset(referenceAsset);
+      } else {
+        next = saveActiveAtlasProject({ ...baseProject, sceneReferenceId: undefined });
+        setSceneReferenceAsset(null);
+      }
       setProject(next);
       setProjectHistory(loadAtlasProjectHistory());
     } catch (error: any) {
@@ -334,7 +425,10 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
       ...project,
       selectedSceneId: asset.id,
       selectedCompositeId: undefined,
+      selectedPostProcessedId: undefined,
       selectedVideoId: undefined,
+      postProcessSettings: undefined,
+      postProcessCompleted: false,
       joyState: undefined,
       currentStage: 'joy',
     });
@@ -359,14 +453,45 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
     setVideoAsset(asset);
   };
 
+  const commitPostProcess = (asset: LibraryAsset, settings: PosterPostProcessSettings) => {
+    if (!project) return;
+    const next = saveActiveAtlasProject({
+      ...project,
+      selectedPostProcessedId: asset.id,
+      selectedVideoId: undefined,
+      postProcessSettings: settings,
+      postProcessCompleted: true,
+      currentStage: project.dynamicEnabled ? 'dynamic' : 'export',
+    });
+    setProject(next);
+    setPostProcessedAsset(asset);
+    setVideoAsset(null);
+  };
+
+  const continueWithOriginalPoster = (settings: PosterPostProcessSettings) => {
+    if (!project) return;
+    const next = saveActiveAtlasProject({
+      ...project,
+      selectedPostProcessedId: undefined,
+      selectedVideoId: undefined,
+      postProcessSettings: settings,
+      postProcessCompleted: true,
+      currentStage: project.dynamicEnabled ? 'dynamic' : 'export',
+    });
+    setProject(next);
+    setPostProcessedAsset(null);
+    setVideoAsset(null);
+  };
+
   const goToStage = (stage: AtlasStage) => {
     if (!project) return;
     if (
       stage === 'scene' ||
       (stage === 'joy' && project.selectedSceneId) ||
       (stage === 'static' && project.selectedCompositeId) ||
-      (stage === 'dynamic' && project.selectedCompositeId && project.dynamicEnabled) ||
-      (stage === 'export' && (project.selectedVideoId || (!project.dynamicEnabled && project.selectedCompositeId)))
+      (stage === 'post' && project.selectedCompositeId) ||
+      (stage === 'dynamic' && project.selectedCompositeId && project.dynamicEnabled && project.postProcessCompleted) ||
+      (stage === 'export' && (project.selectedVideoId || (!project.dynamicEnabled && project.selectedCompositeId && project.postProcessCompleted)))
     ) {
       setProject(saveActiveAtlasProject({ ...project, currentStage: stage }));
     }
@@ -375,6 +500,8 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
   const returnToSetup = () => {
     if (!project) return;
     setProjectName(project.name || '');
+    setSceneSourceMode(project.sceneSourceMode || (project.sceneConcept && !project.sceneReferenceId ? 'prompt' : 'reference'));
+    setSceneConcept(project.sceneConcept || '');
     setLocationName(project.locationName || '');
     setSceneReferenceDataUrl(sceneReferenceAsset?.url || '');
     setSceneCrop(project.sceneCrop || DEFAULT_CROP);
@@ -391,8 +518,11 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
     setSceneReferenceAsset(null);
     setSceneAsset(null);
     setCompositeAsset(null);
+    setPostProcessedAsset(null);
     setVideoAsset(null);
     setProjectName('');
+    setSceneSourceMode('reference');
+    setSceneConcept('');
     setLocationName('');
     setSceneReferenceDataUrl('');
     setSceneCrop(DEFAULT_CROP);
@@ -419,6 +549,13 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
     } finally {
       if (sceneReferenceInputRef.current) sceneReferenceInputRef.current.value = '';
     }
+  };
+
+  const dropSceneReference = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSceneReferenceDragging(false);
+    void chooseSceneReference(event.dataTransfer.files);
   };
 
   const cropPoint = (event: React.PointerEvent<HTMLElement>) => {
@@ -503,7 +640,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
     const assetMap = new Map(assets.map((asset) => [asset.id, asset]));
     const previews: Record<string, { url: string; type: LibraryAsset['type'] }> = {};
     projects.forEach((item) => {
-      const assetId = item.selectedVideoId || item.selectedCompositeId || item.selectedSceneId || item.sceneReferenceId;
+      const assetId = item.selectedVideoId || item.selectedPostProcessedId || item.selectedCompositeId || item.selectedSceneId || item.sceneReferenceId;
       const asset = assetId ? assetMap.get(assetId) : null;
       if (asset) previews[item.id] = { url: asset.url, type: asset.type };
     });
@@ -515,6 +652,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
     setSceneReferenceAsset(null);
     setSceneAsset(null);
     setCompositeAsset(null);
+    setPostProcessedAsset(null);
     setVideoAsset(null);
     setProject(next);
     setProjectHistory(loadAtlasProjectHistory());
@@ -535,8 +673,11 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
     setSceneReferenceAsset(null);
     setSceneAsset(null);
     setCompositeAsset(null);
+    setPostProcessedAsset(null);
     setVideoAsset(null);
     setProjectName('');
+    setSceneSourceMode('reference');
+    setSceneConcept('');
     setLocationName('');
     setSceneReferenceDataUrl('');
     setSceneCrop(DEFAULT_CROP);
@@ -580,7 +721,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                     <div className="min-w-0 py-1">
                       <p className="truncate text-sm font-medium text-white">{item.name}</p>
                       <p className="mt-2 text-xs text-cyan-300/80">{stageLabel}</p>
-                      <p className="mt-1 text-xs text-neutral-500">{item.locationName || '未填写场景地点'}</p>
+                      <p className="mt-1 text-xs text-neutral-500">{item.locationName || '未添加场景备注'}</p>
                       <p className="mt-3 text-[11px] text-neutral-600">{new Date(item.updatedAt).toLocaleString()}</p>
                       {project?.id === item.id && <span className="mt-2 inline-block text-[10px] text-emerald-400">当前任务</span>}
                     </div>
@@ -628,15 +769,58 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
 
   if (!project || project.currentStage === 'setup') {
     return (
-      <div className="flex-1 overflow-y-auto bg-[#090b0c] px-6 py-10">
-        <div className="mx-auto max-w-3xl">
+      <div className="flex-1 min-h-0 flex flex-col bg-[#090b0c]">
+        {project && (
+          <div className="h-[72px] shrink-0 border-b border-white/8 bg-[#0d1010] px-6 flex items-center gap-6">
+            <div className="min-w-[190px]">
+              <p className="truncate text-sm font-semibold text-white">{project.name}</p>
+              <p className="mt-1 text-[11px] text-neutral-500">{project.outputRatio} · {project.outputWidth} x {project.outputHeight} · 自动保存</p>
+            </div>
+            <div className="flex flex-1 items-center justify-center gap-2">
+              {STEPS.map((step, index) => {
+                const active = step.id === 'setup';
+                const reachable = step.id === 'setup'
+                  || step.id === 'scene'
+                  || (step.id === 'joy' && Boolean(project.selectedSceneId))
+                  || (step.id === 'static' && Boolean(project.selectedCompositeId))
+                  || (step.id === 'post' && Boolean(project.selectedCompositeId))
+                  || (step.id === 'dynamic' && Boolean(project.selectedCompositeId) && project.dynamicEnabled && Boolean(project.postProcessCompleted))
+                  || (step.id === 'export' && Boolean(project.selectedVideoId || (!project.dynamicEnabled && project.selectedCompositeId && project.postProcessCompleted)));
+                return (
+                  <React.Fragment key={step.id}>
+                    {index > 0 && <div className={`h-px w-8 ${index === 1 ? 'bg-cyan-400/50' : 'bg-white/10'}`} />}
+                    <button
+                      className={`flex items-center gap-2 text-xs ${active ? 'text-white' : reachable ? 'text-cyan-300' : 'text-neutral-600'} ${reachable ? 'cursor-pointer' : 'cursor-default'}`}
+                      onClick={() => step.id !== 'setup' && reachable && goToStage(step.id)}
+                    >
+                      <span className={`flex h-6 w-6 items-center justify-center rounded-full border text-[10px] ${active ? 'border-cyan-400 bg-cyan-400/10 text-cyan-200' : reachable ? 'border-cyan-400/40 text-cyan-300' : 'border-white/10'}`}>
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
+                      {step.label}
+                    </button>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-3">
+              <button className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white" onClick={() => void openProjectHistory()}>
+                <History size={13} /> 历史任务
+              </button>
+              <button className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white" onClick={startNewProject}>
+                <RotateCcw size={13} /> 新建任务
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="flex-1 overflow-y-auto px-6 py-10">
+          <div className="mx-auto max-w-3xl">
           <div className="mb-8 flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-white/10 bg-white/5">
               <BookOpen size={21} className="text-cyan-300" />
             </div>
             <div>
-              <h2 className="text-2xl font-semibold text-white">{project ? '调整图鉴任务' : '创建图鉴任务'}</h2>
-              <p className="mt-1 text-sm text-neutral-500">{project ? '当前任务信息已保留，调整后重新分析场景' : '设置一次，后续素材和步骤自动传递'}</p>
+              <h2 className="text-2xl font-semibold text-white">{project ? '调整角色海报任务' : '创建角色海报任务'}</h2>
+              <p className="mt-1 text-sm text-neutral-500">{project ? '当前分析结果和关键词已保留；回看不会自动重新分析' : '设置一次，后续素材和步骤自动传递'}</p>
             </div>
             <button className="ml-auto flex h-10 items-center gap-2 rounded-md border border-white/10 px-4 text-sm text-neutral-300 hover:bg-white/5 hover:text-white" onClick={() => void openProjectHistory()}>
               <History size={15} /> 历史任务{projectHistory.length > 0 ? ` ${projectHistory.length}` : ''}
@@ -650,71 +834,126 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                 className="h-12 w-full rounded-md border border-white/10 bg-[#111516] px-4 text-[15px] text-white outline-none focus:border-cyan-400/60"
                 value={projectName}
                 onChange={(event) => setProjectName(event.target.value)}
-                placeholder="例如：JOY 夏日露营图鉴"
+                placeholder="例如：JOY 夏日露营角色海报"
               />
             </label>
 
             <div>
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <span className="text-sm text-neutral-300">场景参考图</span>
-                <span className="text-xs text-neutral-600">用于识别选址与构图</span>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-sm text-neutral-300">场景输入方式</span>
+                <span className="text-xs text-neutral-600">选择一种即可开始</span>
               </div>
-              <input
-                ref={sceneReferenceInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => void chooseSceneReference(event.target.files)}
-              />
-              <div className="relative flex min-h-52 w-full items-center justify-center overflow-hidden rounded-md border border-dashed border-white/15 bg-[#111516]">
-                {sceneReferenceDataUrl ? (
-                  <div ref={cropFrameRef} className="relative inline-block max-w-full">
-                    <img src={sceneReferenceDataUrl} alt="场景参考" className="block max-h-80 max-w-full select-none object-contain" draggable={false} />
-                    <div
-                      className="absolute inset-0 z-10 cursor-crosshair touch-none"
-                      onPointerDown={startCrop}
-                      onPointerMove={moveCrop}
-                      onPointerUp={finishCrop}
-                      onPointerCancel={finishCrop}
-                    />
-                    <div
-                      className="absolute z-20 cursor-move touch-none border-2 border-cyan-300 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]"
-                      style={{
-                        left: `${sceneCrop.x * 100}%`,
-                        top: `${sceneCrop.y * 100}%`,
-                        width: `${sceneCrop.width * 100}%`,
-                        height: `${sceneCrop.height * 100}%`,
-                      }}
-                      onPointerDown={startMoveCrop}
-                      onPointerMove={moveCrop}
-                      onPointerUp={finishCrop}
-                      onPointerCancel={finishCrop}
-                    >
-                      <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-[10px] text-cyan-100">拖拽框内移动</span>
-                      {CROP_HANDLES.map((handle) => (
-                        <button
-                          key={handle.id}
-                          type="button"
-                          aria-label={handle.label}
-                          title={handle.label}
-                          className={`absolute z-30 rounded-sm border border-white bg-cyan-300 shadow-[0_0_0_1px_rgba(0,0,0,0.45)] ${handle.className}`}
-                          style={{ cursor: handle.cursor }}
-                          onPointerDown={(event) => startResizeCrop(handle.id, event)}
-                        />
-                      ))}
-                    </div>
+              <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-white/8 bg-black/20 p-1.5">
+                <button
+                  type="button"
+                  className={`flex h-11 items-center justify-center gap-2 rounded text-sm transition-colors ${sceneSourceMode === 'reference' ? 'bg-white/10 text-white shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => { setSceneSourceMode('reference'); setPrepareError(''); }}
+                >
+                  <ImageIcon size={16} /> 上传参考图
+                </button>
+                <button
+                  type="button"
+                  className={`flex h-11 items-center justify-center gap-2 rounded text-sm transition-colors ${sceneSourceMode === 'prompt' ? 'bg-cyan-400/10 text-cyan-200 shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => { setSceneSourceMode('prompt'); setPrepareError(''); }}
+                >
+                  <Sparkles size={16} /> 文字描述场景
+                </button>
+              </div>
+
+              {sceneSourceMode === 'reference' ? (
+                <>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-sm text-neutral-300">场景参考图</span>
+                    <span className="text-xs text-neutral-600">用于识别选址与构图</span>
                   </div>
-                ) : (
-                  <button type="button" className="flex min-h-52 w-full flex-col items-center justify-center gap-3 text-neutral-500 hover:text-neutral-300" onClick={() => sceneReferenceInputRef.current?.click()}>
-                    <Upload size={26} />
-                    <span className="text-sm text-neutral-300">上传实景或构图参考图</span>
-                  </button>
-                )}
-                {sceneReferenceDataUrl && <button type="button" className="absolute right-3 top-3 z-30 rounded-md bg-black/75 px-3 py-2 text-xs text-white hover:bg-black" onClick={() => sceneReferenceInputRef.current?.click()}>重新选择</button>}
-              </div>
-              {sceneReferenceDataUrl && <p className="mt-2 flex items-center gap-1.5 text-xs text-neutral-500"><Crop size={13} /> 拖拽框内可移动取景区域，拖拽边框或角点可调整大小；在框外拖拽可重新框选</p>}
+                  <input
+                    ref={sceneReferenceInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => void chooseSceneReference(event.target.files)}
+                  />
+                  <div
+                    className={`relative flex min-h-52 w-full items-center justify-center overflow-hidden rounded-md border border-dashed bg-[#111516] transition-colors ${sceneReferenceDragging ? 'border-cyan-300 bg-cyan-400/[0.06] ring-2 ring-cyan-300/20' : 'border-white/15'}`}
+                    onDragEnter={(event) => { event.preventDefault(); setSceneReferenceDragging(true); }}
+                    onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSceneReferenceDragging(true); }}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSceneReferenceDragging(false);
+                    }}
+                    onDrop={dropSceneReference}
+                  >
+                    {sceneReferenceDataUrl ? (
+                      <div ref={cropFrameRef} className="relative inline-block max-w-full">
+                        <img src={sceneReferenceDataUrl} alt="场景参考" className="block max-h-80 max-w-full select-none object-contain" draggable={false} />
+                        <div
+                          className="absolute inset-0 z-10 cursor-crosshair touch-none"
+                          onPointerDown={startCrop}
+                          onPointerMove={moveCrop}
+                          onPointerUp={finishCrop}
+                          onPointerCancel={finishCrop}
+                        />
+                        <div
+                          className="absolute z-20 cursor-move touch-none border-2 border-cyan-300 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]"
+                          style={{
+                            left: `${sceneCrop.x * 100}%`,
+                            top: `${sceneCrop.y * 100}%`,
+                            width: `${sceneCrop.width * 100}%`,
+                            height: `${sceneCrop.height * 100}%`,
+                          }}
+                          onPointerDown={startMoveCrop}
+                          onPointerMove={moveCrop}
+                          onPointerUp={finishCrop}
+                          onPointerCancel={finishCrop}
+                        >
+                          <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-[10px] text-cyan-100">拖拽框内移动</span>
+                          {CROP_HANDLES.map((handle) => (
+                            <button
+                              key={handle.id}
+                              type="button"
+                              aria-label={handle.label}
+                              title={handle.label}
+                              className={`absolute z-30 rounded-sm border border-white bg-cyan-300 shadow-[0_0_0_1px_rgba(0,0,0,0.45)] ${handle.className}`}
+                              style={{ cursor: handle.cursor }}
+                              onPointerDown={(event) => startResizeCrop(handle.id, event)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <button type="button" className="flex min-h-52 w-full flex-col items-center justify-center gap-3 text-neutral-500 hover:text-neutral-300" onClick={() => sceneReferenceInputRef.current?.click()}>
+                        <Upload size={26} />
+                        <span className="text-sm text-neutral-300">点击或拖拽导入实景、构图参考图</span>
+                        <span className="text-xs text-neutral-600">支持 JPG、PNG、WebP</span>
+                      </button>
+                    )}
+                    {sceneReferenceDragging && (
+                      <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-[#071012]/85 backdrop-blur-sm">
+                        <div className="flex flex-col items-center gap-2 text-cyan-200"><Upload size={28} /><span className="text-sm font-medium">释放即可导入场景参考图</span></div>
+                      </div>
+                    )}
+                    {sceneReferenceDataUrl && <button type="button" className="absolute right-3 top-3 z-30 rounded-md bg-black/75 px-3 py-2 text-xs text-white hover:bg-black" onClick={() => sceneReferenceInputRef.current?.click()}>重新选择</button>}
+                  </div>
+                  {sceneReferenceDataUrl && <p className="mt-2 flex items-center gap-1.5 text-xs text-neutral-500"><Crop size={13} /> 拖拽框内可移动取景区域，拖拽边框或角点可调整大小；在框外拖拽可重新框选</p>}
+                </>
+              ) : (
+                <div className="rounded-md border border-cyan-400/15 bg-cyan-400/[0.035] p-4">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-sm text-neutral-200">描述想要的场景画面</span>
+                    <span className="text-xs text-neutral-600">{sceneConcept.length} / 500</span>
+                  </div>
+                  <textarea
+                    className="min-h-36 w-full resize-y rounded-md border border-white/10 bg-black/30 px-4 py-3 text-[15px] leading-7 text-white outline-none placeholder:text-neutral-600 focus:border-cyan-400/50"
+                    maxLength={500}
+                    value={sceneConcept}
+                    onChange={(event) => { setSceneConcept(event.target.value); setPrepareError(''); }}
+                    placeholder="例如：雨后的江南水乡傍晚，青石板路泛着微光，白墙黛瓦沿河展开，远处有拱桥和暖黄色灯笼，整体安静、清新、有一点童话感。"
+                  />
+                  <p className="mt-2 text-xs leading-5 text-neutral-500">建议写清主体、时间或天气、环境元素和想要的氛围。AI 会据此整理三个不同机位的画面方案。</p>
+                </div>
+              )}
             </div>
 
+            {sceneSourceMode === 'reference' && (
             <div>
               <div className="mb-3 flex items-center justify-between gap-3">
                 <span className="flex items-center gap-2 text-sm text-neutral-300"><Camera size={16} /> 摄像机视角</span>
@@ -787,19 +1026,24 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                 </div>
               </div>
             </div>
+            )}
 
             <label className="block">
-              <span className="mb-2 block text-sm text-neutral-300">场景选址</span>
+              <span className="mb-2 block text-sm text-neutral-300">{sceneSourceMode === 'reference' ? '场景备注（可选）' : '场景名称或地点（可选）'}</span>
               <span className="relative block">
                 <MapPin size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" />
                 <input
                   className="h-12 w-full rounded-md border border-white/10 bg-[#111516] pl-11 pr-4 text-[15px] text-white outline-none focus:border-cyan-400/60"
                   value={locationName}
                   onChange={(event) => { setLocationName(event.target.value); setPrepareError(''); }}
-                  placeholder="例如：广州沙面岛汇丰银行一角"
+                  placeholder={sceneSourceMode === 'reference' ? '例如：海边民宿入口（可留空）' : '例如：雨后江南水乡'}
                 />
               </span>
-              <p className="mt-2 text-xs text-neutral-600">下一步会根据图片生成一段简短场景描述，可继续修改。</p>
+              <p className="mt-2 text-xs text-neutral-600">
+                {sceneSourceMode === 'reference'
+                  ? '可不填写；留空时完全依据参考图片，填写后仅作为理解场景的补充备注。'
+                  : '可用于任务识别；留空时会从场景描述中自动提取名称。'}
+              </p>
             </label>
 
             <div>
@@ -819,7 +1063,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
 
             <label className="flex items-center justify-between rounded-md border border-white/8 bg-white/[0.025] px-4 py-4">
               <div>
-                <p className="text-sm text-neutral-200">默认制作动态图鉴</p>
+                <p className="text-sm text-neutral-200">默认制作动态海报</p>
                 <p className="mt-1 text-xs text-neutral-500">静态图确认后自动衔接图生视频</p>
               </div>
               <input type="checkbox" checked={dynamicEnabled} onChange={(event) => setDynamicEnabled(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
@@ -833,22 +1077,35 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                     场景分析模型
                   </p>
                   <p className="mt-1 text-xs text-neutral-500">
-                    {sceneAgentConfig.model || '尚未设置模型'} · 用于识别参考图并生成三个取景方案
+                    {sceneAgentConfig.model || '尚未设置模型'} · 用于分析参考图或文字描述并生成三个取景方案
                   </p>
                 </div>
-                <span className={`rounded-full px-2.5 py-1 text-[11px] ${sceneAgentConfig.apiKey.trim() ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/5 text-neutral-400'}`}>
-                  {sceneAgentConfig.apiKey.trim() ? 'API Key 已配置' : '未配置时使用基础方案'}
+                <span className={`rounded-full px-2.5 py-1 text-[11px] ${sceneAgentConfig.apiKey.trim() || sceneAgentConfig.baseUrl.startsWith('/jd-api') ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/5 text-neutral-400'}`}>
+                  {sceneAgentConfig.apiKey.trim() ? 'API Key 已配置' : sceneAgentConfig.baseUrl.startsWith('/jd-api') ? '使用内网代理' : '未配置时使用基础方案'}
                 </span>
               </summary>
 
               <div className="grid gap-3 border-t border-white/8 px-4 py-4 md:grid-cols-2">
+                <div className="flex items-center justify-between gap-3 rounded-md border border-violet-400/15 bg-violet-400/[0.045] px-3 py-2.5 md:col-span-2">
+                  <div>
+                    <p className="text-xs font-medium text-violet-100">GPT-5.5 · 京东内网语言模型</p>
+                    <p className="mt-1 text-[11px] text-neutral-500">用于场景分析、三个取景方案和提示词优化。</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-md border border-violet-300/20 px-3 py-1.5 text-[11px] text-violet-200 hover:bg-violet-300/10"
+                    onClick={() => setSceneAgentConfig((current) => ({ ...GPT55_PROMPT_AGENT_CONFIG, apiKey: current.apiKey }))}
+                  >
+                    使用内网预设
+                  </button>
+                </div>
                 <label className="block">
                   <span className="mb-1.5 block text-xs text-neutral-500">模型名称</span>
                   <input
                     className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
                     value={sceneAgentConfig.model}
                     onChange={(event) => setSceneAgentConfig((current) => ({ ...current, model: event.target.value }))}
-                    placeholder="doubao-seed-2-0-lite-260428"
+                    placeholder="GPT-5.5-joybuilder"
                   />
                 </label>
                 <label className="block">
@@ -858,7 +1115,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                     type="password"
                     value={sceneAgentConfig.apiKey}
                     onChange={(event) => setSceneAgentConfig((current) => ({ ...current, apiKey: event.target.value }))}
-                    placeholder="填写用于场景分析的 Ark API Key"
+                    placeholder="可留空，由内网代理环境变量提供"
                   />
                 </label>
                 <label className="block">
@@ -867,7 +1124,7 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                     className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
                     value={sceneAgentConfig.baseUrl}
                     onChange={(event) => setSceneAgentConfig((current) => ({ ...current, baseUrl: event.target.value }))}
-                    placeholder="/ark-api"
+                    placeholder="/jd-api"
                   />
                 </label>
                 <label className="block">
@@ -876,27 +1133,44 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
                     className="h-10 w-full rounded-md border border-white/10 bg-black/30 px-3 text-xs text-neutral-200 outline-none focus:border-cyan-400/50"
                     value={sceneAgentConfig.path}
                     onChange={(event) => setSceneAgentConfig((current) => ({ ...current, path: event.target.value }))}
-                    placeholder="/api/v3/responses"
+                    placeholder="/v1/chat/completions"
                   />
                 </label>
                 <p className="text-xs leading-5 text-neutral-600 md:col-span-2">
-                  这里的配置只负责第一步“分析场景”。如果 Key 或接口不可用，会自动使用三个可编辑的基础方案继续，不会阻塞工作流；下一步生成场景图片仍使用图片生成区域选择的 Seedream 等模型。
+                  该语言模型负责第一步场景分析，也会供生成区域中的提示词优化使用。内网部署可通过服务端 JD_API_KEY 提供密钥，个人也可以在这里填写并仅保存在当前浏览器；接口不可用时会自动使用三个可编辑的基础方案，不阻塞工作流。
                 </p>
               </div>
             </details>
           </div>
 
           {prepareError && <p className="mt-4 text-sm text-red-400">{prepareError}</p>}
-          <button disabled={preparingScene} className="mt-7 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black hover:bg-neutral-200 disabled:cursor-wait disabled:opacity-60" onClick={() => void createProject()}>
-            {preparingScene ? <><LoaderCircle size={16} className="animate-spin" /> 正在分析场景</> : <>{project ? '保存调整并重新分析' : '分析场景并进入下一步'} <ArrowRight size={16} /></>}
-          </button>
+          <div className={`mt-7 grid gap-3 ${project ? 'sm:grid-cols-2' : ''}`}>
+            {project && (
+              <button
+                type="button"
+                className="flex h-12 items-center justify-center gap-2 rounded-md border border-cyan-400/35 bg-cyan-400/8 text-sm font-medium text-cyan-200 hover:bg-cyan-400/12"
+                onClick={() => goToStage('scene')}
+              >
+                返回场景生成（保留原方案）
+              </button>
+            )}
+            <button disabled={preparingScene} className="flex h-12 items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black hover:bg-neutral-200 disabled:cursor-wait disabled:opacity-60" onClick={() => void createProject()}>
+              {preparingScene
+                ? <><LoaderCircle size={16} className="animate-spin" /> {sceneSourceMode === 'prompt' ? '正在分析描述' : '正在分析场景'}</>
+                : (project ? '重新分析并覆盖取景方案' : sceneSourceMode === 'prompt' ? '分析描述并进入下一步' : '分析场景并进入下一步')}
+            </button>
+          </div>
+          </div>
+          {historyDialog}
         </div>
-        {historyDialog}
       </div>
     );
   }
 
   const activeIndex = Math.max(0, STEPS.findIndex((step) => step.id === project.currentStage));
+  const finalPosterAsset = postProcessedAsset || compositeAsset;
+  const projectUsesTextScene = project.sceneSourceMode === 'prompt'
+    || Boolean(project.sceneConcept && !project.sceneReferenceId);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-[#090b0c]">
@@ -909,17 +1183,19 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
           {STEPS.map((step, index) => {
             const complete = index < activeIndex;
             const active = index === activeIndex;
-            const reachable = step.id === 'scene'
+            const reachable = step.id === 'setup'
+              || step.id === 'scene'
               || (step.id === 'joy' && Boolean(project.selectedSceneId))
               || (step.id === 'static' && Boolean(project.selectedCompositeId))
-              || (step.id === 'dynamic' && Boolean(project.selectedCompositeId) && project.dynamicEnabled)
-              || (step.id === 'export' && Boolean(project.selectedVideoId || (!project.dynamicEnabled && project.selectedCompositeId)));
+              || (step.id === 'post' && Boolean(project.selectedCompositeId))
+              || (step.id === 'dynamic' && Boolean(project.selectedCompositeId) && project.dynamicEnabled && Boolean(project.postProcessCompleted))
+              || (step.id === 'export' && Boolean(project.selectedVideoId || (!project.dynamicEnabled && project.selectedCompositeId && project.postProcessCompleted)));
             return (
               <React.Fragment key={step.id}>
                 {index > 0 && <div className={`h-px w-8 ${complete || active ? 'bg-cyan-400/50' : 'bg-white/10'}`} />}
                 <button
                   className={`flex items-center gap-2 text-xs ${active ? 'text-white' : complete ? 'text-cyan-300' : 'text-neutral-600'} ${reachable ? 'cursor-pointer' : 'cursor-default'}`}
-                  onClick={() => reachable && goToStage(step.id)}
+                  onClick={() => reachable && (step.id === 'setup' ? returnToSetup() : goToStage(step.id))}
                 >
                   <span className={`flex h-6 w-6 items-center justify-center rounded-full border text-[10px] ${active ? 'border-cyan-400 bg-cyan-400/10 text-cyan-200' : complete ? 'border-cyan-400/50 text-cyan-300' : 'border-white/10'}`}>
                     {complete ? <Check size={12} /> : String(index + 1).padStart(2, '0')}
@@ -931,9 +1207,6 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
           })}
         </div>
         <div className="flex items-center gap-3">
-          <button className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white" onClick={returnToSetup} title="返回上传场景参考图与任务设置">
-            <ArrowLeft size={13} /> 返回初始步骤
-          </button>
           <button className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white" onClick={() => void openProjectHistory()}>
             <History size={13} /> 历史任务
           </button>
@@ -945,21 +1218,37 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
 
       {project.currentStage === 'scene' && (
         <div className="flex-1 min-h-0 flex flex-col">
-          <div className="h-10 shrink-0 border-b border-white/5 bg-cyan-400/[0.035] px-6 flex items-center gap-2 text-xs text-neutral-400">
-            <Sparkles size={13} className="text-cyan-300" /> 已生成三个不同取景方案；选择并微调后即可生图
+          <div
+            className={`min-h-10 shrink-0 border-b px-6 py-2 flex items-center gap-2 text-xs ${project.sceneAnalysisSource === 'fallback' ? 'border-amber-300/10 bg-amber-300/[0.045] text-amber-100/75' : project.sceneAnalysisSource === 'ai' ? 'border-emerald-300/10 bg-emerald-300/[0.04] text-emerald-100/75' : 'border-white/5 bg-cyan-400/[0.035] text-neutral-400'}`}
+            title={project.sceneAnalysisSource === 'fallback' ? project.sceneAnalysisError || '语言模型未返回有效结果' : undefined}
+          >
+            {project.sceneAnalysisSource === 'fallback'
+              ? <AlertTriangle size={13} className="shrink-0 text-amber-300" />
+              : <Sparkles size={13} className="shrink-0 text-emerald-300" />}
+            {project.sceneAnalysisSource === 'fallback'
+              ? 'GPT-5.5 分析未成功，当前显示基础兜底方案；可以返回初始设置重新分析'
+              : project.sceneAnalysisSource === 'ai'
+                ? `${project.sceneAnalysisModel || '语言模型'} 分析成功 · 已生成三个不同画面方案`
+                : projectUsesTextScene ? '已根据文字描述生成三个画面方案；选择并微调后即可生图' : '已生成三个不同取景方案；选择并微调后即可生图'}
           </div>
-          {sceneReferenceAsset ? (
+          {projectUsesTextScene || sceneReferenceAsset ? (
             <AIStudio
               workflowProjectId={project.id}
               workflowStage="scene"
-              workflowInputAsset={sceneReferenceAsset}
-              workflowReferenceImages={[sceneReferenceAsset.url, ...STYLE_REFERENCE_URLS]}
-              workflowReferenceLabels={['完整场景参考', '固定风格 1', '固定风格 2']}
+              workflowInputAsset={projectUsesTextScene ? undefined : sceneReferenceAsset}
+              workflowReferenceImages={projectUsesTextScene ? STYLE_REFERENCE_URLS : [sceneReferenceAsset!.url, ...STYLE_REFERENCE_URLS]}
+              workflowReferenceLabels={projectUsesTextScene ? ['固定风格 1', '固定风格 2'] : ['完整场景参考', '固定风格 1', '固定风格 2']}
               workflowRatio={project.outputRatio}
-              workflowSize="2K"
+              workflowSize={(SCENE_GENERATION_SIZES[project.outputRatio] || SCENE_GENERATION_SIZES['1:1']).join('x')}
               workflowPrompt={project.sceneDescription || ''}
               workflowPromptOptions={project.sceneDescriptionOptions || []}
-              workflowPromptTemplate={buildAtlasPromptTemplate(project.locationName || '', project.sceneCamera || DEFAULT_CAMERA)}
+              workflowPromptTemplate={buildAtlasPromptTemplate(
+                project.locationName || '',
+                project.sceneCamera || DEFAULT_CAMERA,
+                project.outputRatio,
+                projectUsesTextScene ? 'prompt' : 'reference',
+                project.sceneConcept || '',
+              )}
               onWorkflowPromptChange={updateSceneDescription}
               onSelectResult={selectScene}
             />
@@ -979,12 +1268,12 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
             </div>
             <aside className="space-y-5">
               <div>
-                <p className="text-xs uppercase text-cyan-300">02 JOY 编排</p>
+                <p className="text-xs uppercase text-cyan-300">02 角色植入</p>
                 <h3 className="mt-2 text-2xl font-semibold text-white">场景已自动传递</h3>
-                <p className="mt-3 text-sm leading-6 text-neutral-500">调整角色动作、表情、位置、相机和灯光。所有 Capture 结果会自动保存到仓库。</p>
+                <p className="mt-3 text-sm leading-6 text-neutral-500">调整角色动作、表情、位置、相机和灯光。融图完成后可在右侧立即预览并继续制作。</p>
               </div>
               <button disabled={!sceneAsset} className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black disabled:opacity-40" onClick={() => sceneAsset && onEnterJoy(sceneAsset, project.joyState || null, project.id)}>
-                继续 JOY 编排 <ArrowRight size={16} />
+                继续角色植入 <ArrowRight size={16} />
               </button>
               <button className="flex h-11 w-full items-center justify-center gap-2 rounded-md border border-white/10 text-sm text-neutral-300 hover:bg-white/5" onClick={() => goToStage('scene')}>
                 <ArrowLeft size={15} /> 返回更换场景
@@ -1000,17 +1289,17 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
             <div className="min-w-0 space-y-3">
               <div className="min-h-[520px] max-h-[68vh] flex items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black">
                 {compositeAsset
-                  ? <img src={compositeAsset.url} alt="静态图鉴定稿" className="max-h-[68vh] max-w-full object-contain" />
+                  ? <img src={compositeAsset.url} alt="静态海报定稿" className="max-h-[68vh] max-w-full object-contain" />
                   : <ImageIcon size={42} className="text-neutral-700" />}
               </div>
-              <button disabled={!compositeAsset} className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-40" onClick={() => goToStage(project.dynamicEnabled ? 'dynamic' : 'export')}>
-                {project.dynamicEnabled ? '保存并制作动态图鉴' : '保存并进入导出'} <ArrowRight size={16} />
+              <button disabled={!compositeAsset} className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-40" onClick={() => goToStage('post')}>
+                确认静态定稿，进入海报后期 <ArrowRight size={16} />
               </button>
-              <p className="text-center text-xs leading-5 text-neutral-600">{project.dynamicEnabled ? '当前图片会自动保存并成为图生视频首帧。' : '当前任务未启用动态版本，将保存静态图鉴并进入导出。'}</p>
+              <p className="text-center text-xs leading-5 text-neutral-600">下一步可在本地调整明暗、色彩、曲线和渐变映射，不消耗模型积分。</p>
             </div>
             <aside className="space-y-5">
               <div>
-                <p className="text-xs uppercase text-cyan-300">03 静态图鉴</p>
+                <p className="text-xs uppercase text-cyan-300">03 静态海报</p>
                 <h3 className="mt-2 text-2xl font-semibold text-white">确认静态定稿</h3>
                 <p className="mt-3 text-sm leading-6 text-neutral-500">当前结果已与场景和 JOY 参数关联并保存。返回调整时会恢复动作、表情、角度、位置、焦段和灯光。</p>
               </div>
@@ -1022,15 +1311,29 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
         </div>
       )}
 
-      {project.currentStage === 'dynamic' && compositeAsset && (
+      {project.currentStage === 'post' && compositeAsset && (
+        <PosterPostProcessStage
+          key={`${project.id}_${compositeAsset.id}`}
+          sourceAsset={compositeAsset}
+          projectId={project.id}
+          projectName={project.name}
+          initialSettings={project.postProcessSettings}
+          dynamicEnabled={project.dynamicEnabled}
+          onBack={() => goToStage('static')}
+          onContinueOriginal={continueWithOriginalPoster}
+          onCommit={commitPostProcess}
+        />
+      )}
+
+      {project.currentStage === 'dynamic' && finalPosterAsset && (
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="h-10 shrink-0 border-b border-white/5 bg-cyan-400/[0.035] px-6 flex items-center gap-2 text-xs text-neutral-400">
-            <Film size={13} className="text-cyan-300" /> 静态定稿已自动设为首帧。生成后选择一个视频即可进入导出。
+            <Film size={13} className="text-cyan-300" /> {postProcessedAsset ? '后期版本' : '原始静态定稿'}已自动设为帧素材，可选择单图生视频或首尾帧。生成后选择一个视频即可进入导出。
           </div>
           <AIStudio
             workflowProjectId={project.id}
             workflowStage="dynamic"
-            workflowInputAsset={compositeAsset}
+            workflowInputAsset={finalPosterAsset}
             workflowRatio={project.outputRatio}
             workflowSize={(DYNAMIC_RATIO_SIZES[project.outputRatio] || [project.outputWidth, project.outputHeight]).join('x')}
             workflowPrompt={`保持角色形象、服装、场景构图和镜头角度一致，角色自然${String(project.joyState?.pose || '做轻微待机动作')}，动作幅度克制，环境产生细微动态，画面稳定，无镜头突变。`}
@@ -1045,20 +1348,20 @@ export const AtlasWorkspace: React.FC<AtlasWorkspaceProps> = ({ revision = 0, on
             <div className="min-h-[560px] max-h-[76vh] flex items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black">
               {videoAsset
                 ? <video src={videoAsset.url} controls autoPlay loop className="max-h-[76vh] max-w-full object-contain" />
-                : compositeAsset
-                  ? <img src={compositeAsset.url} alt="图鉴导出预览" className="max-h-[76vh] max-w-full object-contain" />
+                : finalPosterAsset
+                  ? <img src={finalPosterAsset.url} alt="海报导出预览" className="max-h-[76vh] max-w-full object-contain" />
                   : <ImageIcon size={42} className="text-neutral-700" />}
             </div>
             <aside className="space-y-5">
               <div>
                 <p className="text-xs uppercase text-cyan-300">05 导出</p>
-                <h3 className="mt-2 text-2xl font-semibold text-white">图鉴任务已完成</h3>
+                <h3 className="mt-2 text-2xl font-semibold text-white">角色海报任务已完成</h3>
                 <p className="mt-3 text-sm leading-6 text-neutral-500">当前定稿已经保存在素材仓库，并保留场景、JOY 状态和生成关系，可随时返回上一步继续调整。</p>
               </div>
-              <button disabled={!videoAsset && !compositeAsset} className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-40" onClick={() => downloadOutput(videoAsset || compositeAsset)}>
-                <Download size={16} /> 下载{videoAsset ? '动态' : '静态'}图鉴
+              <button disabled={!videoAsset && !finalPosterAsset} className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-white text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-40" onClick={() => downloadOutput(videoAsset || finalPosterAsset)}>
+                <Download size={16} /> 下载{videoAsset ? '动态' : '静态'}海报
               </button>
-              <button className="flex h-11 w-full items-center justify-center gap-2 rounded-md border border-white/10 text-sm text-neutral-200 hover:bg-white/5" onClick={() => goToStage(videoAsset ? 'dynamic' : 'static')}>
+              <button className="flex h-11 w-full items-center justify-center gap-2 rounded-md border border-white/10 text-sm text-neutral-200 hover:bg-white/5" onClick={() => goToStage(videoAsset ? 'dynamic' : 'post')}>
                 <ArrowLeft size={15} /> 返回上一步
               </button>
               <p className="text-xs leading-5 text-emerald-400/80">已存入仓库 · 与任务 {project.name} 关联</p>
