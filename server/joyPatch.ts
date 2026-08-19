@@ -8,6 +8,26 @@ export function patchJoyComposeHtml(html: string) {
     'new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })',
     'new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true })',
   );
+  patched = patched.replace(
+    `<label class="lbl">Shadow size</label>
+  <div class="row"><input type="range" id="shadow-size" min="0.4" max="2.5" step="0.05" value="1" /><span class="num" id="shadow-size-v">1.0</span></div>`,
+    `<label class="lbl">Shadow size</label>
+  <div class="row"><input type="range" id="shadow-size" min="0.4" max="2.5" step="0.05" value="1" /><span class="num" id="shadow-size-v">1.0</span></div>
+  <label class="lbl">Shadow blur</label>
+  <div class="row"><input type="range" id="shadow-blur" min="0" max="100" step="1" value="60" /><span class="num" id="shadow-blur-v">60</span></div>`,
+  );
+  patched = patched.replace(
+    `function shadowTex(){ const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');const gr=g.createRadialGradient(64,64,4,64,64,60);gr.addColorStop(0,'rgba(0,0,0,0.55)');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.fillRect(0,0,128,128);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t; }
+const shadow = new THREE.Sprite(new THREE.SpriteMaterial({ map: shadowTex(), transparent:true, depthWrite:false, opacity:0.32 }));`,
+    `let shadowBlur=60;
+function shadowTex(blur=shadowBlur){ const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');const softness=THREE.MathUtils.clamp(+blur||0,0,100)/100;const inner=4+(1-softness)*46;const mid=inner+(60-inner)*0.58;const gr=g.createRadialGradient(64,64,inner,64,64,60);gr.addColorStop(0,'rgba(0,0,0,0.55)');gr.addColorStop(Math.min(.96,Math.max(.08,mid/60)),'rgba(0,0,0,0.32)');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.fillRect(0,0,128,128);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t; }
+const shadow = new THREE.Sprite(new THREE.SpriteMaterial({ map: shadowTex(), transparent:true, depthWrite:false, opacity:0.32 }));
+function updateShadowBlur(value){ shadowBlur=THREE.MathUtils.clamp(+value||0,0,100);const previous=shadow.material.map;shadow.material.map=shadowTex(shadowBlur);shadow.material.needsUpdate=true;if(previous) previous.dispose(); }`,
+  );
+  patched = patched.replace(
+    "bind('shadow-size',val=>{shadowSize=val;},v=>v.toFixed(1));",
+    "bind('shadow-size',val=>{shadowSize=val;},v=>v.toFixed(1));\nbind('shadow-blur',val=>{updateShadowBlur(val);},v=>Math.round(v));",
+  );
 
   // The embedded tool is an editor, so skip JOY's marketing home screen entirely.
   patched = patched.replace("setView('home');", "setView('gen');");
@@ -18,6 +38,16 @@ export function patchJoyComposeHtml(html: string) {
   patched = patched.replaceAll('/api/user-proxy', '/joy-proxy/api/user-proxy');
   patched = patched.replaceAll('/api/agnes/chat', '/joy-proxy/api/agnes/chat');
   patched = patched.replaceAll('/api/agnes/image', '/joy-proxy/api/agnes/image');
+
+  // Gemini image models may return only a thought signature unless image output is explicit.
+  patched = patched.replace(
+    "contents: [{ role: 'user', parts }],\n        };",
+    "contents: [{ role: 'user', parts }],\n          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },\n        };",
+  );
+  patched = patched.replace(
+    "parts.push({ text: prompt || defPrompt });",
+    "parts.push({ text: (prompt || defPrompt) + '\\n请直接生成并返回修改后的图片，不要只返回分析或文字说明。' });",
+  );
 
   // Track JOY's live selection so the embedded controller and native panel share one state.
   patched = patched.replace(
@@ -59,6 +89,7 @@ function getJoyState(){
       shadowX: num('shadow-x'),
       shadowY: num('shadow-y'),
       shadowSize: num('shadow-size'),
+      shadowBlur: num('shadow-blur'),
       shadowEnabled: checked('shadow-on'),
       toneMatch: checked('tone-match'),
     },
@@ -98,7 +129,7 @@ function setJoyInput(id, value, eventName='input'){
   el.dispatchEvent(new Event(eventName, { bubbles:true }));
 }
 document.addEventListener('input', e => {
-  if(e.target?.matches?.('#dog-scale,#dog-yaw,#dog-pitch,#dog-x,#dog-y,#exposure,#light-amb,#shadow-op,#shadow-x,#shadow-y,#shadow-size')) emitJoyState();
+  if(e.target?.matches?.('#dog-scale,#dog-yaw,#dog-pitch,#dog-x,#dog-y,#exposure,#light-amb,#shadow-op,#shadow-x,#shadow-y,#shadow-size,#shadow-blur')) emitJoyState();
 });
 document.addEventListener('change', e => {
   if(e.target?.matches?.('#shadow-on,#tone-match')) emitJoyState();
@@ -146,6 +177,7 @@ document.addEventListener('pointerup', () => emitJoyState());
       setJoyInput('shadow-x', d.shadowX);
       setJoyInput('shadow-y', d.shadowY);
       setJoyInput('shadow-size', d.shadowSize);
+      setJoyInput('shadow-blur', d.shadowBlur);
       setJoyInput('shadow-on', d.shadowEnabled, 'change');
       setJoyInput('tone-match', d.toneMatch, 'change');
       emitJoyState();
@@ -543,6 +575,17 @@ function syncShadow(){ shadow.position.set(dogGroup.position.x+(shadowDirX||0)+s
     "document.getElementById('gen-btn').addEventListener('click',async()=>{ window.parent.postMessage({_joy:true,type:'generationStarted'},'*');",
   );
   patched = patched.replace(
+    "}catch(err){ hint.style.color='#ff9090'; hint.textContent='✗ 生成失败: '+(err.message||err); }",
+    `}catch(err){
+      const rawError=String(err?.message||err);
+      const timeout=/\\b(?:502|504)\\b|gateway\\s*time-?out|timed?\\s*out|timeout|超时/i.test(rawError);
+      const friendly=timeout?'融图服务响应超时，请稍后重试或切换图片模型。':rawError.replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim().slice(0,120);
+      hint.style.color='#ff9090';
+      hint.textContent='✗ 生成失败: '+friendly;
+      window.parent.postMessage({_joy:true,type:'generationFailed',error:rawError},'*');
+    }`,
+  );
+  patched = patched.replace(
     "addToHistory(localPath||imgUrl,'image',prompt,false);",
     `addToHistory(localPath||imgUrl,'image',prompt,false);
     const adoptedUrl=localPath||imgUrl;
@@ -590,10 +633,18 @@ window.addEventListener('message',function(event){
   const data=event.data;
   if(data&&data._lottiekey&&data.type==='workflowMode'){
     window.__lkWorkflowMode=Boolean(data.enabled);
+    document.body.classList.toggle('lk-workflow-mode',window.__lkWorkflowMode);
+    document.body.dataset.joyflowWorkflow=window.__lkWorkflowMode?'1':'0';
+    const mcpPanel=document.getElementById('pop-mcp');
+    if(mcpPanel) mcpPanel.style.setProperty('display',window.__lkWorkflowMode?'none':'','important');
     if(window.__lkSyncWorkflowButton) window.__lkSyncWorkflowButton();
   }
 });
-</script></body>`,
+</script>
+<style id="lottiekey-workflow-mcp-guard">
+body.lk-workflow-mode #pop-mcp,
+body[data-joyflow-workflow="1"] #pop-mcp { display:none!important; }
+</style></body>`,
   );
 
   const imagePreviewGuard = `
@@ -1180,4 +1231,3 @@ window.addEventListener('message',function(event){
 
   return patched;
 }
-

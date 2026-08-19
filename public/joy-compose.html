@@ -1017,6 +1017,8 @@
   <div class="row"><input type="range" id="shadow-y" min="-2" max="2" step="0.01" value="0" /><span class="num" id="shadow-y-v">0.00</span></div>
   <label class="lbl">Shadow size</label>
   <div class="row"><input type="range" id="shadow-size" min="0.4" max="2.5" step="0.05" value="1" /><span class="num" id="shadow-size-v">1.0</span></div>
+  <label class="lbl">Shadow blur</label>
+  <div class="row"><input type="range" id="shadow-blur" min="0" max="100" step="1" value="60" /><span class="num" id="shadow-blur-v">60</span></div>
 </div>
 </div><!-- /edit-panel -->
 
@@ -1503,8 +1505,10 @@ const animFaceTimeline = {
 let lastTimelineFace=null;
 
 // 投影 blob
-function shadowTex(){ const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');const gr=g.createRadialGradient(64,64,4,64,64,60);gr.addColorStop(0,'rgba(0,0,0,0.55)');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.fillRect(0,0,128,128);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t; }
+let shadowBlur=60;
+function shadowTex(blur=shadowBlur){ const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');const softness=THREE.MathUtils.clamp(+blur||0,0,100)/100;const inner=4+(1-softness)*46;const mid=inner+(60-inner)*0.58;const gr=g.createRadialGradient(64,64,inner,64,64,60);gr.addColorStop(0,'rgba(0,0,0,0.55)');gr.addColorStop(Math.min(.96,Math.max(.08,mid/60)),'rgba(0,0,0,0.32)');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.fillRect(0,0,128,128);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t; }
 const shadow = new THREE.Sprite(new THREE.SpriteMaterial({ map: shadowTex(), transparent:true, depthWrite:false, opacity:0.32 }));
+function updateShadowBlur(value){ shadowBlur=THREE.MathUtils.clamp(+value||0,0,100);const previous=shadow.material.map;shadow.material.map=shadowTex(shadowBlur);shadow.material.needsUpdate=true;if(previous) previous.dispose(); }
 scene.add(shadow);
 
 new GLTFLoader().load('assets/joy_rigged.glb', gltf => {
@@ -1962,6 +1966,7 @@ bind('shadow-op',val=>shadow.material.opacity=val,v=>v.toFixed(2));
 bind('shadow-x',val=>{shadowXOff=val;},v=>v.toFixed(2));
 bind('shadow-y',val=>{shadowYOff=val;},v=>v.toFixed(2));
 bind('shadow-size',val=>{shadowSize=val;},v=>v.toFixed(1));
+bind('shadow-blur',val=>{updateShadowBlur(val);},v=>Math.round(v));
 document.getElementById('shadow-on').addEventListener('change',e=>shadow.visible=e.target.checked);
 document.getElementById('tone-match').addEventListener('change',e=>{ toneMatchOn=e.target.checked; matchToneToBackground(); });
 
@@ -3560,7 +3565,14 @@ document.getElementById('gen-btn').addEventListener('click',async()=>{ window.pa
       // 注:gpt-image-* 只输出 1024×1024 / 1024×1536 / 1536×1024,原样返回,不强拉到 ow×oh(会变形)
       if(imgUrl){ showResult(imgUrl); hint.textContent='✓ 融合生成完成！点击图片可放大。'; }
       else throw new Error('响应无图片: '+JSON.stringify(resp).slice(0,200));
-    }catch(err){ hint.style.color='#ff9090'; hint.textContent='✗ 生成失败: '+(err.message||err); }
+    }catch(err){
+      const rawError=String(err?.message||err);
+      const timeout=/\b(?:502|504)\b|gateway\s*time-?out|timed?\s*out|timeout|超时/i.test(rawError);
+      const friendly=timeout?'融图服务响应超时，请稍后重试或切换图片模型。':rawError.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,120);
+      hint.style.color='#ff9090';
+      hint.textContent='✗ 生成失败: '+friendly;
+      window.parent.postMessage({_joy:true,type:'generationFailed',error:rawError},'*');
+    }
     return;
   }
 
@@ -4271,6 +4283,7 @@ function getJoyState(){
       shadowX: num('shadow-x'),
       shadowY: num('shadow-y'),
       shadowSize: num('shadow-size'),
+      shadowBlur: num('shadow-blur'),
       shadowEnabled: checked('shadow-on'),
       toneMatch: checked('tone-match'),
     },
@@ -4310,7 +4323,7 @@ function setJoyInput(id, value, eventName='input'){
   el.dispatchEvent(new Event(eventName, { bubbles:true }));
 }
 document.addEventListener('input', e => {
-  if(e.target?.matches?.('#dog-scale,#dog-yaw,#dog-pitch,#dog-x,#dog-y,#exposure,#light-amb,#shadow-op,#shadow-x,#shadow-y,#shadow-size')) emitJoyState();
+  if(e.target?.matches?.('#dog-scale,#dog-yaw,#dog-pitch,#dog-x,#dog-y,#exposure,#light-amb,#shadow-op,#shadow-x,#shadow-y,#shadow-size,#shadow-blur')) emitJoyState();
 });
 document.addEventListener('change', e => {
   if(e.target?.matches?.('#shadow-on,#tone-match')) emitJoyState();
@@ -4359,6 +4372,7 @@ window.addEventListener('message', e => {
       setJoyInput('shadow-x', d.shadowX);
       setJoyInput('shadow-y', d.shadowY);
       setJoyInput('shadow-size', d.shadowSize);
+      setJoyInput('shadow-blur', d.shadowBlur);
       setJoyInput('shadow-on', d.shadowEnabled, 'change');
       setJoyInput('tone-match', d.toneMatch, 'change');
       emitJoyState();
@@ -4431,10 +4445,18 @@ window.addEventListener('message',function(event){
   const data=event.data;
   if(data&&data._lottiekey&&data.type==='workflowMode'){
     window.__lkWorkflowMode=Boolean(data.enabled);
+    document.body.classList.toggle('lk-workflow-mode',window.__lkWorkflowMode);
+    document.body.dataset.joyflowWorkflow=window.__lkWorkflowMode?'1':'0';
+    const mcpPanel=document.getElementById('pop-mcp');
+    if(mcpPanel) mcpPanel.style.setProperty('display',window.__lkWorkflowMode?'none':'','important');
     if(window.__lkSyncWorkflowButton) window.__lkSyncWorkflowButton();
   }
 });
 </script>
+<style id="lottiekey-workflow-mcp-guard">
+body.lk-workflow-mode #pop-mcp,
+body[data-joyflow-workflow="1"] #pop-mcp { display:none!important; }
+</style>
 <style id="lottiekey-joy-image-preview-style">
   #lk-image-preview {
     position: fixed;
