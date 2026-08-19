@@ -30,6 +30,7 @@ interface JoyLight {
   shadowX: number;
   shadowY: number;
   shadowSize: number;
+  shadowBlur: number;
   shadowEnabled: boolean;
   toneMatch: boolean;
 }
@@ -212,6 +213,7 @@ const DEFAULT_LIGHT: JoyLight = {
   shadowX: 0,
   shadowY: 0,
   shadowSize: 1,
+  shadowBlur: 60,
   shadowEnabled: true,
   toneMatch: true,
 };
@@ -246,6 +248,7 @@ const LIGHT_CONTROLS = [
   ['shadowX', '阴影水平位置', -2, 2, 0.01],
   ['shadowY', '阴影垂直位置', -2, 2, 0.01],
   ['shadowSize', '阴影大小', 0.4, 2.5, 0.05],
+  ['shadowBlur', '阴影模糊', 0, 100, 1],
 ] as const;
 
 const formatValue = (value: number, step: number) => step >= 1 ? Math.round(value) : value.toFixed(2);
